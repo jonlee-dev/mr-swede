@@ -15,6 +15,8 @@ logging.config.fileConfig("./logging.conf", disable_existing_loggers=False)
 logger = logging.getLogger("default")
 bot = commands.Bot(command_prefix='$')
 
+DISCORD_TOKEN = "token"
+
 # Utility
 @bot.command()
 async def join(ctx):
@@ -123,5 +125,5 @@ async def stats(ctx):
     await ctx.send(ow_accounts)
 
 logger.debug("running bot")
-bot.run('NTMwODIzMTQzMjQ2NTI4NTI5.XC-tkw.cBnGFbjA0Tn5b0aOuEkEUK3DtX8')
+bot.run(DISCORD_TOKEN)
 
