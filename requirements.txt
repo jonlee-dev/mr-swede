@@ -1,9 +1,10 @@
-requests==2.25.1
+python_vlc==3.0.12118
+openpyxl==3.0.7
 pafy==0.5.5
 ffmpeg==1.4
-python_vlc==3.0.12118
-discord.py==1.7.2
+requests==2.25.1
 youtube_dl==2021.4.26
-openpyxl==3.0.7
+discord.py==1.7.2
 beautifulsoup4==4.9.3
 discord==1.0.1
+PyYAML==5.4.1
