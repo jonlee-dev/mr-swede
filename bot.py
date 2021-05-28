@@ -98,18 +98,29 @@ async def stats(ctx):
         sheet = workbook.active
         ow_accounts = {}
         for row in sheet.iter_rows(min_row=2, min_col=1):
-            logger.debug(row)
             account = row[0].value
-            ow_accounts[account] = {'name': account,
-                    'pw': row[1].value,
-                    'sr': row[2].value}
-            new_sr = overwatch.stats(account)
-            ow_accounts[account]['sr'] = new_sr
+            if account:
+                logger.debug(account)
+                ow_accounts[account] = {'name': account,
+                        'pw': row[1].value,
+                        'sr': row[2].value,
+                        'sr_all_roles': row[3].value}
+                logger.debug(ow_accounts[account]['name'])
+
+                sr_tuple = overwatch.stats(account)
+                if sr_tuple:
+                    highest_sr = int(sr_tuple[0]) if sr_tuple[0] else 0
+                    ow_accounts[account]['sr_all_roles'] = sr_tuple[1] if sr_tuple[1] else []
+                    if ow_accounts[account]['sr'] and highest_sr > ow_accounts[account]['sr']:
+                        ow_accounts[account]['sr'] = highest_sr
 
         logger.debug("saving workbook")
         workbook.save(filename="accounts.xlsx")
-    except:
-        logger.debug(traceback.format_exc())
+    except AttributeError:
+        logger.debug("Account name is case-sensitive")
+    except Exception as e:
+        logger.debug(e.message())
+    await ctx.send(ow_accounts)
 
 logger.debug("running bot")
 bot.run('NTMwODIzMTQzMjQ2NTI4NTI5.XC-tkw.cBnGFbjA0Tn5b0aOuEkEUK3DtX8')

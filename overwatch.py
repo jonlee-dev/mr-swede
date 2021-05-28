@@ -1,14 +1,19 @@
 import requests
 import json
-import traceback
-
-headers = {"TRN-Api-Key": "a32ef3b1-384a-41c0-8e9c-5ff228d0af69"}
+from bs4 import BeautifulSoup
 
 def stats(battletag: str):
     try:
-        response = requests.get(f"https://public-api.tracker.gg/v2/overwatch/standard/profile/battlenet/{battletag}", headers=headers)
-    except:
-        return traceback.format_exc()
+        endpoint = f"https://playoverwatch.com/en-us/career/pc/{battletag.replace('#','-')}" 
+        page = requests.get(endpoint)
+        soup = BeautifulSoup(page.content, 'html.parser')
+        sr_elems = soup.find_all('div', class_='competitive-rank-level')
+        sr_all_roles = [sr_elem.text.strip() for sr_elem in sr_elems]
+        return (sr_all_roles[0], sr_all_roles[1:])
+    except Exception as e:
+        print("error occurred in overwatch stats")
 
-    return response
-    
+def main():
+    print(stats("KraftPunk#11658"))
+
+main()
