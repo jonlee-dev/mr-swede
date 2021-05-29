@@ -9,16 +9,12 @@ import ffmpeg
 import logging, logging.config
 import openpyxl
 from discord.ext import commands
-import yaml
 import overwatch
 
 logging.config.fileConfig("./logging.conf", disable_existing_loggers=False)
 logger = logging.getLogger("default")
 
 bot = commands.Bot(command_prefix='$')
-
-with open('./secrets.yaml') as f:
-    secrets = yaml.safe_load(f)
 
 # Utility Commands
 @bot.command()
@@ -128,5 +124,6 @@ async def stats(ctx):
     await ctx.send(ow_accounts)
 
 logger.debug("running bot")
-bot.run(secrets['discord']['token'])
+logger.debug(os.environ.get('DISCORD_TOKEN'))
+bot.run(os.environ.get('DISCORD_TOKEN'))
 
