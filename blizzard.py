@@ -51,7 +51,9 @@ def get_deck(code: str):
         logger.error(f"HTTP error occurred: {http_error}")
     except Exception as error:
         logger.error(f"other error occurred in get_deck: {error}")
-    response_json = response.json()
-    parsed = json.loads(response_json)
-    print(json.dumps(parsed, indent=4, sort_keys=True))
-    return response_json
+    deck = response.json()
+    cards = {}
+    for card in deck['cards']:
+        logger.debug(card)
+        cards[card['id']] = {'name': card['name']}
+    return cards

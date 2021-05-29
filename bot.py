@@ -26,6 +26,21 @@ async def join(ctx):
     channel = ctx.author.voice.channel
     await channel.connect()
 
+def pretty_format(message):
+    formatted_message = ''
+    message_type = type(message)
+    if message_type is dict:
+        for k, v in message.items():
+            if type(v) is not dict:
+                formatted_message = formatted_message + f'{k}:\n\t{v}\n'
+            else: formatted_message = formatted_message + pretty_format(v)
+    if message_type is str:
+        formatted_message = message
+    if message_type is list:
+        formmated_message = '- '
+        formatted_message = formatted_message + '\n- '.join(message)
+    return formatted_message
+
 # Music Commands
 @bot.command(aliases=['p'])
 async def play(ctx, url):
@@ -125,13 +140,14 @@ async def stats(ctx):
         logger.debug("Account name is case-sensitive")
     except Exception as e:
         logger.debug(e.message())
-    await ctx.send(ow_accounts)
+    await ctx.send(pretty_format(ow_accounts))
 
 @bot.command()
 async def deck(ctx, code):
     token = os.environ.get('BLIZZARD_TOKEN')
     deck = blizzard.get_deck(code)
-    await ctx.send(deck)
+    
+    await ctx.send(pretty_format(deck))
 
 logger.debug("running bot")
 logger.debug(os.environ.get('DISCORD_TOKEN'))
