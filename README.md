@@ -6,6 +6,7 @@
   ```
   DISCORD_TOKEN=<token>
   ```
+- (optional): store `BLIZZARD_TOKEN` as well to access Blizzard APIs
 
 #### Starting the Bot
 

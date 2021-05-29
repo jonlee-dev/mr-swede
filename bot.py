@@ -3,16 +3,20 @@ import discord
 import discord.utils
 import pafy
 from youtube_dl import YoutubeDL
-import vlc
 import re
 import ffmpeg
 import logging, logging.config
 import openpyxl
 from discord.ext import commands
+from dotenv import load_dotenv
+
 import overwatch
+import blizzard
+
+load_dotenv()
 
 logging.config.fileConfig("./logging.conf", disable_existing_loggers=False)
-logger = logging.getLogger("default")
+logger = logging.getLogger()
 
 bot = commands.Bot(command_prefix='$')
 
@@ -122,6 +126,12 @@ async def stats(ctx):
     except Exception as e:
         logger.debug(e.message())
     await ctx.send(ow_accounts)
+
+@bot.command()
+async def deck(ctx, code):
+    token = os.environ.get('BLIZZARD_TOKEN')
+    deck = blizzard.get_deck(code)
+    await ctx.send(deck)
 
 logger.debug("running bot")
 logger.debug(os.environ.get('DISCORD_TOKEN'))

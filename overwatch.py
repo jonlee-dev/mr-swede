@@ -1,6 +1,9 @@
 import requests
 import json
+import logging
 from bs4 import BeautifulSoup
+
+logger = logging.getLogger()
 
 def stats(battletag: str):
     try:
@@ -11,9 +14,4 @@ def stats(battletag: str):
         sr_all_roles = [sr_elem.text.strip() for sr_elem in sr_elems]
         return (sr_all_roles[0], sr_all_roles[1:])
     except Exception as e:
-        print("error occurred in overwatch stats")
-
-def main():
-    print(stats("KraftPunk#11658"))
-
-main()
+        logger.debug("error occurred in overwatch stats")
