@@ -14,18 +14,19 @@ import overwatch
 
 logging.config.fileConfig("./logging.conf", disable_existing_loggers=False)
 logger = logging.getLogger("default")
+
 bot = commands.Bot(command_prefix='$')
 
 with open('./secrets.yaml') as f:
     secrets = yaml.safe_load(f)
 
-# Utility
+# Utility Commands
 @bot.command()
 async def join(ctx):
     channel = ctx.author.voice.channel
     await channel.connect()
 
-# Music
+# Music Commands
 @bot.command(aliases=['p'])
 async def play(ctx, url):
     logger.debug("in play")
@@ -94,7 +95,7 @@ async def disconnect(ctx):
     voice = ctx.channel.guild.voice_client
     voice.disconnect()
 
-# Overwatch
+# Overwatch Commands
 @bot.command()
 async def stats(ctx):
     try:
@@ -127,5 +128,5 @@ async def stats(ctx):
     await ctx.send(ow_accounts)
 
 logger.debug("running bot")
-bot.run(secrets.discord.token)
+bot.run(secrets['discord']['token'])
 
