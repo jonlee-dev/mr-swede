@@ -1,8 +1,8 @@
 ### Setup
 
 - install `python3`, `pip3`, and `pipenv`
-- install dependencies by using `pipenv install` in root directory
 - execute `pipenv shell` to activate a subshell for your python environment
+- install dependencies by using `pipenv install` in root directory
 - store discord token in environment before running in a `.env` file located in your root
   ```
   # example.env
