@@ -15,6 +15,7 @@ openpyxl==3.0.7
 pafy==0.5.5
 plumbum==1.7.0
 python-dotenv==0.17.1
+PyYAML==5.4.1
 requests==2.25.1
 rpyc==5.0.1
 soupsieve==2.2.1

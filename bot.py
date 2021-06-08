@@ -9,14 +9,22 @@ import logging, logging.config
 import openpyxl
 from discord.ext import commands
 from dotenv import load_dotenv
+import yaml
 
-import overwatch
-import blizzard
+import utils.overwatch as overwatch
 
+import apis.api as api
+import apis.blizzard as blizzard
+
+# Setup
 load_dotenv()
 
-logging.config.fileConfig("./logging.conf", disable_existing_loggers=False)
-logger = logging.getLogger()
+logging.config.fileConfig(r'./config/logging.conf', disable_existing_log=False)
+log = logging.getLogger()
+
+config_map = dict()
+with open(file=r'config/config.yaml') as f:
+    config_map = yaml.load(f, Loader=yaml.FullLoader)
 
 bot = commands.Bot(command_prefix='$')
 
@@ -44,7 +52,7 @@ def pretty_format(message):
 # Music Commands
 @bot.command(aliases=['p'])
 async def play(ctx, url):
-    logger.debug("in play")
+    log.info("in play")
     voice_channel = ctx.author.voice.channel
     voice = discord.utils.get(bot.voice_clients, guild=ctx.guild)
     # logic to move voice client to the correct channel
@@ -95,7 +103,7 @@ async def pause(ctx):
     if voice.is_playing():
         voice.pause()
     else:
-        logger.debug("nothing is playing")
+        log.info("nothing is playing")
 
 @bot.command()
 async def resume(ctx):
@@ -103,7 +111,7 @@ async def resume(ctx):
     if voice.is_paused():
         voice.resume()
     else:
-        logger.debug("nothing is paused")
+        log.info("nothing is paused")
 
 @bot.command()
 async def disconnect(ctx):
@@ -120,12 +128,12 @@ async def stats(ctx):
         for row in sheet.iter_rows(min_row=2, min_col=1):
             account = row[0].value
             if account:
-                logger.debug(account)
+                log.info(account)
                 ow_accounts[account] = {'name': account,
                         'pw': row[1].value,
                         'sr': row[2].value,
                         'sr_all_roles': row[3].value}
-                logger.debug(ow_accounts[account]['name'])
+                log.info(ow_accounts[account]['name'])
 
                 sr_tuple = overwatch.stats(account)
                 if sr_tuple:
@@ -134,22 +142,26 @@ async def stats(ctx):
                     if ow_accounts[account]['sr'] and highest_sr > ow_accounts[account]['sr']:
                         ow_accounts[account]['sr'] = highest_sr
 
-        logger.debug("saving workbook")
+        log.info("saving workbook")
         workbook.save(filename="accounts.xlsx")
     except AttributeError:
-        logger.debug("Account name is case-sensitive")
+        log.info("Account name is case-sensitive")
     except Exception as e:
-        logger.debug(e.message())
+        log.info(e.message())
     await ctx.send(pretty_format(ow_accounts))
 
 @bot.command()
-async def deck(ctx, code):
-    token = os.environ.get('BLIZZARD_TOKEN')
-    deck = blizzard.get_deck(code)
+async def deck(ctx, code, blizzard_session=None):
+    if not blizzard_session:
+        blizzard_session = api.API(client_id=os.environ.get('BLIZZARD_CLIENT_ID'),
+                client_secret=os.environ.get('BLIZZARD_CLIENT_SECRET'),
+                token_url=config_map(['blizzard']['token_url']).get_token())
+
+    blizzard.get_deck(code, blizzard_session.token_url)
     
     await ctx.send(pretty_format(deck))
 
-logger.debug("running bot")
-logger.debug(os.environ.get('DISCORD_TOKEN'))
+log.info("running bot")
+log.info(os.environ.get('DISCORD_TOKEN'))
 bot.run(os.environ.get('DISCORD_TOKEN'))
 

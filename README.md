@@ -2,8 +2,8 @@
 
 - install `python3`, `pip3`
 - (Optional: Activate your venv)
-- run `python3 install -r requirements.txt" to install package dependencies
-- store discord token in environment before running in a `.env` file located in your root
+- run `python3 install -r requirements.txt` to install package dependencies
+- store discord token in environment before running in a `.env` file located in your project root
   ```
   # .env
   DISCORD_TOKEN=<token>
