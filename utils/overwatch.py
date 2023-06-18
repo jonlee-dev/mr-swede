@@ -8,7 +8,7 @@ log = logging.getLogger()
 def fetch_player_rank(battletag: str):
     # API Reference: https://overfast-api.tekrop.fr/#tag/Players/operation/get_player_summary_players__player_id__summary_get
     endpoint = f"https://overfast-api.tekrop.fr/players/{battletag.replace('#','-')}/summary"
-    response = requests.get(endpoint)
+    response = requests.get(endpoint, params={"gamemode":"competitive", "platform":"pc"})
     if response.status_code == 200:
         player_data = response.json()
         tank_rank = player_data['competitive']['season']['tank']['division'] + " " + player_data['competitive']['season']['tank']['tier']
