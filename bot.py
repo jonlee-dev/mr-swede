@@ -165,33 +165,10 @@ async def deck(ctx, code, blizzard_session=None):
     await ctx.send(pretty_format(deck))
 
 # Discord bot command: Update and fetch SR
-@bot.command()
-async def ow2_rank(ctx):
-    # Fetch the data from the Google Sheets spreadsheet
-    client = authenticate_google_sheets()
-    spreadsheet = client.open_by_url(spreadsheet_url)
-    worksheet = spreadsheet.get_worksheet(0)  # Assuming you want to fetch data from the first worksheet
-
-    # Get all rows of data (excluding the header row)
-    data = worksheet.get_all_values()[1:]
-
-    for index, row in enumerate(data):
-        # Assuming the columns are as follows: A - BattleTag, B - Tank SR, C - DPS SR, D - Support SR
-        battletag = row[0]
-        tank_sr = row[1]
-        dps_sr = row[2]
-        support_sr = row[3]
-
-        # Perform any necessary processing or API calls here to update the SR values
-        # For example:
-        # tank_sr = get_tank_sr(battletag)
-        # dps_sr = get_dps_sr(battletag)
-        # support_sr = get_support_sr(battletag)
-
-        # Update the SR values in the spreadsheet
-        update_sr_in_google_sheets(index, tank_sr, dps_sr, support_sr)
-
-    await ctx.send("SR values updated successfully.")
+@bot.command(aliases=['ow'])
+async def ow2_rank(ctx, battle_tag):
+    result = overwatch.update_sr(battle_tag)
+    await ctx.send("SR values updated successfully.\n" + result)
 
 log.info("running bot")
 log.info(os.environ.get('DISCORD_TOKEN'))
