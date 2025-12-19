@@ -1,0 +1,212 @@
+"""Overfast API client for Overwatch stats.
+
+Overfast API is a community-maintained API that scrapes Overwatch profile data.
+API Documentation: https://overfast-api.tekrop.fr/
+"""
+
+from typing import Any
+
+from src.config.logging import get_logger
+from src.database.models import CompetitiveStats, RankInfo
+from src.services.base import BaseAPIClient
+
+logger = get_logger(__name__)
+
+# Overfast API base URL
+OVERFAST_API_URL = "https://overfast-api.tekrop.fr"
+
+
+class OverfastClient(BaseAPIClient):
+    """Client for the Overfast API."""
+    
+    def __init__(self) -> None:
+        """Initialize the Overfast API client."""
+        super().__init__(base_url=OVERFAST_API_URL)
+    
+    @staticmethod
+    def normalize_battle_tag(battle_tag: str) -> str:
+        """Convert BattleTag to API-compatible format.
+        
+        Args:
+            battle_tag: BattleTag in format "Name#1234" or "Name-1234"
+            
+        Returns:
+            BattleTag in format "Name-1234"
+        """
+        return battle_tag.replace("#", "-")
+    
+    async def get_player_summary(self, battle_tag: str) -> dict[str, Any]:
+        """Get player summary including competitive ranks.
+        
+        Args:
+            battle_tag: Player's BattleTag
+            
+        Returns:
+            Player summary data
+            
+        Raises:
+            httpx.HTTPStatusError: If player not found or API error
+        """
+        normalized_tag = self.normalize_battle_tag(battle_tag)
+        endpoint = f"/players/{normalized_tag}/summary"
+        
+        logger.info("Fetching player summary", battle_tag=battle_tag)
+        return await self._get(endpoint)
+    
+    async def get_player_stats(
+        self, 
+        battle_tag: str, 
+        gamemode: str = "competitive",
+        platform: str = "pc",
+    ) -> dict[str, Any]:
+        """Get detailed player statistics.
+        
+        Args:
+            battle_tag: Player's BattleTag
+            gamemode: Game mode ("competitive" or "quickplay")
+            platform: Platform ("pc" or "console")
+            
+        Returns:
+            Player statistics data
+        """
+        normalized_tag = self.normalize_battle_tag(battle_tag)
+        endpoint = f"/players/{normalized_tag}/stats"
+        
+        params = {
+            "gamemode": gamemode,
+            "platform": platform,
+        }
+        
+        logger.info("Fetching player stats", battle_tag=battle_tag, gamemode=gamemode)
+        return await self._get(endpoint, params=params)
+    
+    async def get_player_career(self, battle_tag: str) -> dict[str, Any]:
+        """Get player career profile data.
+        
+        Args:
+            battle_tag: Player's BattleTag
+            
+        Returns:
+            Player career data
+        """
+        normalized_tag = self.normalize_battle_tag(battle_tag)
+        endpoint = f"/players/{normalized_tag}"
+        
+        logger.info("Fetching player career", battle_tag=battle_tag)
+        return await self._get(endpoint)
+    
+    async def get_competitive_stats(self, battle_tag: str) -> CompetitiveStats:
+        """Get competitive stats in structured format.
+        
+        Args:
+            battle_tag: Player's BattleTag
+            
+        Returns:
+            CompetitiveStats model with rank information
+        """
+        try:
+            summary = await self.get_player_summary(battle_tag)
+            
+            competitive = summary.get("competitive", {})
+            if not competitive:
+                logger.warning("No competitive data found", battle_tag=battle_tag)
+                return CompetitiveStats()
+            
+            # Handle both 'pc' and 'console' keys
+            pc_data = competitive.get("pc", {})
+            if not pc_data:
+                # Try to get from season data directly (API structure varies)
+                pc_data = competitive.get("season", {})
+            
+            # Parse rank data for each role
+            def parse_rank(role_data: dict[str, Any] | None) -> RankInfo:
+                if not role_data:
+                    return RankInfo()
+                return RankInfo(
+                    division=role_data.get("division", ""),
+                    tier=role_data.get("tier", 0),
+                    skill_rating=role_data.get("skill_rating"),
+                )
+            
+            # Get season info if available
+            season = None
+            if "season" in pc_data:
+                season_data = pc_data.get("season", {})
+                tank_data = season_data.get("tank")
+                damage_data = season_data.get("damage")
+                support_data = season_data.get("support")
+            else:
+                tank_data = pc_data.get("tank")
+                damage_data = pc_data.get("damage")
+                support_data = pc_data.get("support")
+            
+            stats = CompetitiveStats(
+                tank=parse_rank(tank_data),
+                damage=parse_rank(damage_data),
+                support=parse_rank(support_data),
+                season=season,
+            )
+            
+            logger.info(
+                "Fetched competitive stats",
+                battle_tag=battle_tag,
+                tank=stats.tank.display,
+                damage=stats.damage.display,
+                support=stats.support.display,
+            )
+            
+            return stats
+            
+        except Exception as e:
+            logger.error("Failed to get competitive stats", battle_tag=battle_tag, error=str(e))
+            raise
+    
+    async def search_players(self, name: str, limit: int = 25) -> list[dict[str, Any]]:
+        """Search for players by name.
+        
+        Args:
+            name: Player name to search for
+            limit: Maximum results to return
+            
+        Returns:
+            List of matching players
+        """
+        endpoint = "/players"
+        params = {"name": name, "limit": limit}
+        
+        logger.info("Searching players", name=name)
+        response = await self._get(endpoint, params=params)
+        return response.get("results", [])
+    
+    async def get_heroes(self) -> list[dict[str, Any]]:
+        """Get list of all heroes.
+        
+        Returns:
+            List of hero data
+        """
+        endpoint = "/heroes"
+        response = await self._get(endpoint)
+        return response
+    
+    async def get_maps(self) -> list[dict[str, Any]]:
+        """Get list of all maps.
+        
+        Returns:
+            List of map data
+        """
+        endpoint = "/maps"
+        response = await self._get(endpoint)
+        return response
+    
+    async def check_health(self) -> bool:
+        """Check if the API is healthy.
+        
+        Returns:
+            True if API is healthy
+        """
+        try:
+            await self._get("/")
+            return True
+        except Exception:
+            return False
+
