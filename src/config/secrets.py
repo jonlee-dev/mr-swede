@@ -84,11 +84,12 @@ class SecretManager:
             try:
                 from google.cloud import secretmanager
                 self._client = secretmanager.SecretManagerServiceClient()
-            except ImportError:
-                logger.warning("google-cloud-secret-manager not installed")
+                logger.info("Secret Manager client created successfully")
+            except ImportError as e:
+                logger.error("google-cloud-secret-manager not installed", error=str(e))
                 return None
             except Exception as e:
-                logger.error("Failed to create Secret Manager client", error=str(e))
+                logger.error("Failed to create Secret Manager client", error=str(e), error_type=type(e).__name__)
                 return None
         return self._client
     
@@ -118,14 +119,19 @@ class SecretManager:
             Parsed JSON dict or None if failed
         """
         if not secret_path:
+            logger.warning("Empty secret path provided")
             return None
         
         # Check cache first
         if secret_path in self._cache:
+            logger.debug("Using cached secret", path=secret_path)
             return self._cache[secret_path]
         
         if not self.client:
+            logger.error("Secret Manager client not available - cannot fetch secrets")
             return None
+        
+        logger.info("Fetching secret from GSM", path=secret_path)
         
         try:
             response = self.client.access_secret_version(request={"name": secret_path})
@@ -134,14 +140,14 @@ class SecretManager:
             
             # Cache the result
             self._cache[secret_path] = parsed
-            logger.debug("Loaded secret", path=secret_path)
+            logger.info("Successfully loaded secret", path=secret_path, keys=list(parsed.keys()))
             
             return parsed
         except json.JSONDecodeError as e:
             logger.error("Secret is not valid JSON", path=secret_path, error=str(e))
             return None
         except Exception as e:
-            logger.error("Failed to fetch secret", path=secret_path, error=str(e))
+            logger.error("Failed to fetch secret", path=secret_path, error=str(e), error_type=type(e).__name__)
             return None
     
     def get_blizzard_secrets(self) -> BlizzardSecrets | None:
@@ -184,9 +190,11 @@ class SecretManager:
             DiscordBotSecrets or None if not available
         """
         bot_name = bot_name or self._discord_bot_name
+        logger.info("Getting Discord secrets", bot_name=bot_name)
         
         # Try environment variables first (for local dev)
         if os.environ.get("DISCORD_TOKEN"):
+            logger.info("Using DISCORD_TOKEN from environment variable")
             return DiscordBotSecrets(
                 id=os.environ.get("DISCORD_APPLICATION_ID", ""),
                 token=os.environ["DISCORD_TOKEN"],
