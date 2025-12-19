@@ -13,55 +13,81 @@ from typing import AsyncGenerator
 import uvicorn
 from fastapi import FastAPI
 
-from src.bot import create_bot, get_bot_token
 from src.config.logging import get_logger, setup_logging
-from src.config.secrets import get_secrets
 from src.config.settings import get_settings
 
 logger = get_logger(__name__)
 
 
-# Global bot instance for health check access
+# Global state for health checks
 _bot = None
+_bot_task = None
+_startup_error: str | None = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    """FastAPI lifespan manager for startup/shutdown."""
-    global _bot
+    """FastAPI lifespan manager for startup/shutdown.
+    
+    Important: We start the HTTP server FIRST, then connect to Discord.
+    This ensures Cloud Run health checks pass while the bot is connecting.
+    """
+    global _bot, _bot_task, _startup_error
     
     settings = get_settings()
     
     logger.info(
-        "Starting Mr. Swede bot...",
+        "Server starting...",
         bot_name=settings.discord_bot_name,
         environment=settings.environment,
     )
     
-    # Get the bot token
-    try:
-        token = get_bot_token()
-    except ValueError as e:
-        logger.error("Failed to get bot token", error=str(e))
-        raise
+    # Start bot connection in background (don't block server startup)
+    _bot_task = asyncio.create_task(_start_bot_async(settings))
     
-    # Create and start the bot
-    _bot = create_bot()
+    yield  # Server is now accepting requests
     
-    # Start bot in background task
-    bot_task = asyncio.create_task(_bot.start(token))
-    
-    yield
-    
-    # Cleanup
+    # Cleanup on shutdown
     logger.info("Shutting down...")
     if _bot:
         await _bot.close()
-    bot_task.cancel()
+    if _bot_task:
+        _bot_task.cancel()
+        try:
+            await _bot_task
+        except asyncio.CancelledError:
+            pass
+
+
+async def _start_bot_async(settings) -> None:
+    """Start the Discord bot asynchronously.
+    
+    This runs after the HTTP server is ready, so health checks work.
+    """
+    global _bot, _startup_error
+    
+    # Import here to avoid circular imports and defer loading
+    from src.bot import create_bot, get_bot_token
+    
     try:
-        await bot_task
-    except asyncio.CancelledError:
-        pass
+        token = get_bot_token()
+    except ValueError as e:
+        _startup_error = str(e)
+        logger.error(
+            "Failed to get bot token",
+            error=str(e),
+            hint="Check GSM configuration or set DISCORD_TOKEN env var",
+        )
+        return  # Don't crash - keep health endpoint running for debugging
+    
+    logger.info("Connecting to Discord...")
+    _bot = create_bot()
+    
+    try:
+        await _bot.start(token)
+    except Exception as e:
+        _startup_error = str(e)
+        logger.error("Bot connection failed", error=str(e))
 
 
 # FastAPI app for Cloud Run health checks
@@ -85,8 +111,19 @@ async def root() -> dict:
 
 @app.get("/health")
 async def health() -> dict:
-    """Health check endpoint for Cloud Run."""
-    global _bot
+    """Health check endpoint for Cloud Run.
+    
+    Returns 200 as long as the server is running.
+    Cloud Run uses this to determine if the container is healthy.
+    """
+    global _bot, _startup_error
+    
+    if _startup_error:
+        return {
+            "status": "error",
+            "bot_ready": False,
+            "error": _startup_error,
+        }
     
     if _bot and _bot.is_ready():
         return {
@@ -122,16 +159,6 @@ def main() -> None:
     setup_logging()
     settings = get_settings()
     
-    # Validate secrets are available
-    secrets = get_secrets(discord_bot_name=settings.discord_bot_name)
-    if not secrets.discord:
-        logger.error(
-            "Discord secrets not found",
-            bot_name=settings.discord_bot_name,
-            hint="Check GSM configuration or set DISCORD_TOKEN env var",
-        )
-        sys.exit(1)
-    
     logger.info(
         "Starting server",
         host=settings.host,
@@ -140,7 +167,7 @@ def main() -> None:
         bot_name=settings.discord_bot_name,
     )
     
-    # Run with uvicorn
+    # Run with uvicorn - bot starts asynchronously via lifespan
     uvicorn.run(
         app,
         host=settings.host,
