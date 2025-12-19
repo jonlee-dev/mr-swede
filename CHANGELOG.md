@@ -46,6 +46,13 @@ This release introduces a robust secrets management system using Google Secret M
 - **GSM secrets structure** — Added JSON examples and secret structure diagrams
 - **Architecture diagram** — Added `secrets.py` and `env.example` to file tree
 
+### Infrastructure
+
+- **Removed `cloudbuild.yaml`** — Cloud Run deploys directly from GitHub, no build config needed
+- **Cost-optimized Cloud Run settings** — CPU throttling reduces costs from ~$35/month to ~$3-5/month
+- **Resource tuning** — 512Mi memory, 1 vCPU, min/max instances = 1
+- **Added CLI commands** — TODO.md includes `gcloud run services update` for applying settings
+
 ### Technical Details
 
 #### Secrets Architecture

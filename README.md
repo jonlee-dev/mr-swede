@@ -245,7 +245,6 @@ mr-swede/
 │   ├── integration/         # API integration tests
 │   └── acceptance/          # ATDD with pytest-bdd (Gherkin features)
 ├── Dockerfile               # Multi-stage build for Cloud Run
-├── cloudbuild.yaml          # GCP Cloud Build CI/CD pipeline
 ├── pyproject.toml           # Poetry configuration
 ├── env.example              # Environment variable template
 ├── TODO.md                  # Setup guide & manual tasks
@@ -258,27 +257,53 @@ mr-swede/
 
 ### Cloud Run (Recommended)
 
-The bot is optimized for Google Cloud Run with:
+The bot is deployed via **Cloud Run's GitHub integration** — push to `main` and it auto-deploys.
+
+Features:
 - HTTP health check endpoint for container lifecycle
-- Automatic scaling (configurable min/max instances)
+- **CPU throttling** for cost optimization (only pay when processing)
 - Google Secret Manager for secure credential storage
 - Firestore for persistent data
 
-```bash
-# First-time setup: follow TODO.md for prerequisites
+### First-Time Setup
 
-# Deploy using Cloud Build
-gcloud builds submit --config=cloudbuild.yaml
+1. Connect your GitHub repo to Cloud Run via the [Cloud Console](https://console.cloud.google.com/run)
+2. Select your repo and branch (`main`)
+3. Cloud Run will build from `Dockerfile` automatically
+
+After first deploy, apply cost-optimized settings:
+
+```bash
+gcloud run services update mr-swede \
+  --region=us-central1 \
+  --cpu-throttling \
+  --cpu-boost \
+  --memory=512Mi \
+  --cpu=1 \
+  --min-instances=1 \
+  --max-instances=1
 ```
 
-> **Note:** For voice features to work reliably, set `min-instances=1` in Cloud Run configuration. This incurs a baseline cost but ensures the bot can maintain voice connections.
+### Cost Estimate
 
-### GitHub Actions
+| Setting | Value | Why |
+|---------|-------|-----|
+| CPU Throttling | ✅ Enabled | Only pay for CPU when processing commands |
+| Min Instances | 1 | Keeps Discord connection alive |
+| Max Instances | 1 | No need to scale for personal server |
+| Memory | 512Mi | Sufficient for bot + audio |
+| CPU | 1 vCPU | Handles audio streaming (throttled when idle) |
 
-The repository includes a CI workflow (`.github/workflows/ci.yaml`) that:
-1. Runs linting (Ruff) and type checking (MyPy)
-2. Executes unit and acceptance tests
-3. Builds Docker image on main branch pushes
+**Estimated monthly cost: ~$3-5** (vs ~$35/month without throttling)
+
+> **Note:** The bot maintains a persistent WebSocket connection to Discord, so `min-instances=1` is required. CPU throttling ensures you only pay for actual processing time.
+
+### GitHub Actions (Optional)
+
+You can add a CI workflow (`.github/workflows/ci.yaml`) for:
+1. Running linting (Ruff) and type checking (MyPy)
+2. Executing unit and acceptance tests
+3. Validating PRs before merge
 
 ---
 

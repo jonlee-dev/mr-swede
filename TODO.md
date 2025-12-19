@@ -39,8 +39,7 @@ gcloud services enable \
   secretmanager.googleapis.com \
   firestore.googleapis.com \
   run.googleapis.com \
-  cloudbuild.googleapis.com \
-  containerregistry.googleapis.com \
+  artifactregistry.googleapis.com \
   cloudresourcemanager.googleapis.com
 ```
 
@@ -70,21 +69,6 @@ gcloud services enable \
    gcloud projects add-iam-policy-binding $PROJECT_ID \
      --member="serviceAccount:${SA_EMAIL}" \
      --role="roles/run.invoker"
-   ```
-
-3. **Grant Cloud Build permissions:**
-   ```bash
-   # Get Cloud Build service account
-   BUILD_SA="${PROJECT_ID}@cloudbuild.gserviceaccount.com"
-   
-   # Grant Cloud Run deployment permissions
-   gcloud projects add-iam-policy-binding $PROJECT_ID \
-     --member="serviceAccount:${BUILD_SA}" \
-     --role="roles/run.admin"
-   
-   gcloud projects add-iam-policy-binding $PROJECT_ID \
-     --member="serviceAccount:${BUILD_SA}" \
-     --role="roles/iam.serviceAccountUser"
    ```
 
 ---
@@ -204,38 +188,58 @@ gcloud firestore indexes create --file=firestore.indexes.json
 
 ## 🚀 Cloud Run Deployment
 
-### First-Time Deployment
-```bash
-# Deploy using Cloud Build
-gcloud builds submit --config=cloudbuild.yaml
+### Automatic Deployment (GitHub Integration)
 
-# Or deploy directly with gcloud
-gcloud run deploy mr-swede \
-  --source . \
-  --region us-central1 \
-  --allow-unauthenticated \
-  --min-instances 1 \
-  --max-instances 3 \
-  --memory 1Gi \
-  --timeout 3600 \
-  --set-env-vars "ENV=production,LOG_FORMAT=json,DISCORD_BOT_NAME=mr-swede" \
-  --service-account mr-swede-sa@${PROJECT_ID}.iam.gserviceaccount.com
+Cloud Run is connected directly to your GitHub repo. When you push to `main`, it automatically:
+1. Builds the Docker image from your `Dockerfile`
+2. Deploys to Cloud Run
+
+No `cloudbuild.yaml` needed — settings are configured in Cloud Run directly.
+
+### Cost-Optimized Configuration
+
+After the first deployment, apply these settings to reduce costs from ~$35/month to ~$3-5/month:
+
+```bash
+# Apply cost-optimized settings (run once)
+gcloud run services update mr-swede \
+  --region=us-central1 \
+  --cpu-throttling \
+  --cpu-boost \
+  --memory=512Mi \
+  --cpu=1 \
+  --min-instances=1 \
+  --max-instances=1 \
+  --timeout=3600 \
+  --set-env-vars="ENV=production,LOG_FORMAT=json,DISCORD_BOT_NAME=mr-swede"
 ```
+
+| Setting | Value | Why |
+|---------|-------|-----|
+| `--cpu-throttling` | Enabled | Only pay for CPU when processing commands |
+| `--cpu-boost` | Enabled | Faster cold starts |
+| `--memory=512Mi` | 512 MB | Sufficient for bot + audio |
+| `--cpu=1` | 1 vCPU | Handles audio streaming |
+| `--min-instances=1` | 1 | Keeps Discord connection alive |
+| `--max-instances=1` | 1 | No need to scale for personal server |
+
+**Estimated cost: ~$3-5/month**
 
 ### Switch to ow2-ranked-bot
 ```bash
-gcloud run deploy mr-swede \
-  --set-env-vars "DISCORD_BOT_NAME=ow2-ranked-bot"
+gcloud run services update mr-swede \
+  --region=us-central1 \
+  --set-env-vars="DISCORD_BOT_NAME=ow2-ranked-bot"
 ```
 
-### Set Up Cloud Build Trigger (for CI/CD)
+### Manual Deployment (if needed)
 ```bash
-# Connect your GitHub repository first via Cloud Console, then:
-gcloud builds triggers create github \
-  --repo-name=mr-swede \
-  --repo-owner=jonlee-dev \
-  --branch-pattern="^main$" \
-  --build-config=cloudbuild.yaml
+# Deploy from source (uses Dockerfile)
+gcloud run deploy mr-swede \
+  --source . \
+  --region=us-central1 \
+  --allow-unauthenticated \
+  --service-account=mr-swede-sa@${PROJECT_ID}.iam.gserviceaccount.com
 ```
 
 ---
@@ -243,7 +247,7 @@ gcloud builds triggers create github \
 ## 💻 Local Development Setup
 
 ### Prerequisites
-- Python 3.11+
+- Python 3.12+
 - Poetry (dependency management)
 - FFmpeg (for audio playback)
 - `gcloud` CLI authenticated
@@ -347,8 +351,9 @@ poetry run pytest tests/acceptance -v
 ## 📝 Notes
 
 ### Cost Considerations
-- **Cloud Run**: With `min-instances=1`, baseline cost ~$15-30/month
-  - Set `min-instances=0` to scale to zero (but voice won't work reliably)
+- **Cloud Run**: With CPU throttling + `min-instances=1`, cost is ~$3-5/month
+  - Without throttling: ~$35/month (not recommended)
+  - With `min-instances=0`: ~$0 but voice connections will drop
 - **Firestore**: Free tier includes 1GB storage, 50k reads/day, 20k writes/day
 - **Secret Manager**: First 6 active secrets free, then $0.03/version/month
 
