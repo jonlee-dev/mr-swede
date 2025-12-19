@@ -2,8 +2,13 @@
 
 Overfast API is a community-maintained API that scrapes Overwatch profile data.
 API Documentation: https://overfast-api.tekrop.fr/
+
+NOTE: This is a FREE community API with STRICT rate limits (~1 req/sec).
+All requests go through a global rate limiter to avoid 429 errors.
 """
 
+import asyncio
+import time
 from typing import Any
 
 from src.config.logging import get_logger
@@ -15,13 +20,42 @@ logger = get_logger(__name__)
 # Overfast API base URL
 OVERFAST_API_URL = "https://overfast-api.tekrop.fr"
 
+# Global rate limiter - Overfast API allows ~1 request per second
+# Using 1.5s to be safe
+_last_request_time: float = 0
+_rate_limit_lock = asyncio.Lock()
+RATE_LIMIT_INTERVAL = 1.5  # seconds between requests
+
+
+async def _wait_for_rate_limit() -> None:
+    """Wait if needed to respect API rate limits."""
+    global _last_request_time
+    
+    async with _rate_limit_lock:
+        now = time.time()
+        elapsed = now - _last_request_time
+        
+        if elapsed < RATE_LIMIT_INTERVAL:
+            wait_time = RATE_LIMIT_INTERVAL - elapsed
+            logger.info(
+                "⏳ Rate limit wait",
+                wait_seconds=round(wait_time, 2),
+                last_request_ago=round(elapsed, 2),
+            )
+            await asyncio.sleep(wait_time)
+        
+        _last_request_time = time.time()
+
 
 class OverfastClient(BaseAPIClient):
-    """Client for the Overfast API."""
+    """Client for the Overfast API.
+    
+    All requests are automatically rate-limited to ~1 req/sec to avoid 429 errors.
+    """
     
     def __init__(self) -> None:
         """Initialize the Overfast API client."""
-        super().__init__(base_url=OVERFAST_API_URL)
+        super().__init__(base_url=OVERFAST_API_URL, timeout=15.0)
     
     @staticmethod
     def normalize_battle_tag(battle_tag: str) -> str:
@@ -49,9 +83,41 @@ class OverfastClient(BaseAPIClient):
         """
         normalized_tag = self.normalize_battle_tag(battle_tag)
         endpoint = f"/players/{normalized_tag}/summary"
+        url = f"{self.base_url}{endpoint}"
         
-        logger.info("Fetching player summary", battle_tag=battle_tag)
-        return await self._get(endpoint)
+        # Wait for rate limit before making request
+        await _wait_for_rate_limit()
+        
+        logger.info(
+            "🎮 Overfast API request START",
+            method="GET",
+            endpoint=endpoint,
+            url=url,
+            battle_tag=battle_tag,
+        )
+        
+        start_time = time.time()
+        try:
+            result = await self._get(endpoint)
+            elapsed = time.time() - start_time
+            logger.info(
+                "✅ Overfast API request SUCCESS",
+                endpoint=endpoint,
+                battle_tag=battle_tag,
+                elapsed_ms=round(elapsed * 1000),
+                response_keys=list(result.keys()) if isinstance(result, dict) else None,
+            )
+            return result
+        except Exception as e:
+            elapsed = time.time() - start_time
+            logger.error(
+                "❌ Overfast API request FAILED",
+                endpoint=endpoint,
+                battle_tag=battle_tag,
+                elapsed_ms=round(elapsed * 1000),
+                error=str(e),
+            )
+            raise
     
     async def get_player_stats(
         self, 
@@ -77,6 +143,7 @@ class OverfastClient(BaseAPIClient):
             "platform": platform,
         }
         
+        await _wait_for_rate_limit()
         logger.info("Fetching player stats", battle_tag=battle_tag, gamemode=gamemode)
         return await self._get(endpoint, params=params)
     
@@ -92,6 +159,7 @@ class OverfastClient(BaseAPIClient):
         normalized_tag = self.normalize_battle_tag(battle_tag)
         endpoint = f"/players/{normalized_tag}"
         
+        await _wait_for_rate_limit()
         logger.info("Fetching player career", battle_tag=battle_tag)
         return await self._get(endpoint)
     
@@ -188,6 +256,7 @@ class OverfastClient(BaseAPIClient):
         endpoint = "/players"
         params = {"name": name, "limit": limit}
         
+        await _wait_for_rate_limit()
         logger.info("Searching players", name=name)
         response = await self._get(endpoint, params=params)
         return response.get("results", [])
@@ -198,6 +267,7 @@ class OverfastClient(BaseAPIClient):
         Returns:
             List of hero data
         """
+        await _wait_for_rate_limit()
         endpoint = "/heroes"
         response = await self._get(endpoint)
         return response
@@ -208,6 +278,7 @@ class OverfastClient(BaseAPIClient):
         Returns:
             List of map data
         """
+        await _wait_for_rate_limit()
         endpoint = "/maps"
         response = await self._get(endpoint)
         return response

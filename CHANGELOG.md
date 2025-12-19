@@ -5,6 +5,92 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.5] - 2024-12-19
+
+### 🧪 Comprehensive Test Coverage
+
+This release adds 27 new unit tests covering all recent functionality.
+
+### Added
+
+- **Overfast rate limiting tests** — Tests for `_wait_for_rate_limit` function behavior
+- **Overwatch caching tests** — Tests for `_get_cached_stats` and `_cache_stats`
+- **YouTube caching tests** — Tests for audio URL caching with TTL expiration
+- **YouTube options tests** — Tests for low-quality format preference and retry disabling
+- **Thread pool tests** — Tests for FFmpeg and yt-dlp executor isolation
+- **Cache key tests** — Tests for YouTube URL normalization and query lowercasing
+- **AudioTrack tests** — Tests for duration formatting
+
+### Changed
+
+- Test count increased from 58 to 85 tests
+- Overall code coverage improved from 26% to 35%
+
+---
+
+## [2.1.4] - 2024-12-19
+
+### 📋 Enhanced Debug Logging
+
+This release adds comprehensive logging for debugging music and Overwatch commands.
+
+### Added
+
+- **Music cog logging** — Full request lifecycle logging for `/play` command:
+  - Command start with user/guild info
+  - Voice channel connection status
+  - Spotify URL parsing details
+  - YouTube search/extraction timing
+  - FFmpeg source creation timing
+  - Playback start confirmation
+- **Overwatch cog logging** — Full request lifecycle logging for `/ow stats` command:
+  - Command start with user/guild info
+  - Cache hit/miss/expired status with TTL info
+  - API request timing
+  - Command completion timing
+- **YouTube service logging** — Detailed extraction logs:
+  - Cache hit/miss/expired with TTL
+  - Search vs direct URL extraction
+  - Per-operation timing (search, extract, overall)
+  - Error categorization (auth, unavailable, timeout)
+- **Overfast service logging** — API request lifecycle:
+  - Rate limit wait times
+  - Request start/success/failure with timing
+  - Response keys for debugging
+
+### Changed
+
+- **Log level adjustments** — Cache and rate limit logs promoted from debug to info for better visibility
+
+---
+
+## [2.1.3] - 2024-12-19
+
+### 🎵 Lower Audio Quality & Overfast Rate Limiting Fix
+
+This release optimizes audio extraction and fixes Overfast API rate limiting.
+
+### Changed
+
+- **Lower audio quality extraction** — Now requests lowest quality opus/vorbis instead of "best" (Discord only supports 64kbps anyway)
+- **Audio format selection** — Prefers lowest bitrate formats for faster downloads
+- **Cache TTL increased** — Overfast stats cached for 10 minutes (up from 5) due to strict rate limits
+- **Overfast API timeout** — Reduced to 15 seconds (was 30)
+
+### Fixed
+
+- **Overfast API 429 errors** — Added global rate limiter (1.5s between requests) to ALL Overfast API calls
+- **Rate limiting in refresh** — Added 1.5s delay between accounts when refreshing stats
+- **Track command hitting API** — Now checks cache before making API call
+- **Missing cache update** — Refresh command now updates the in-memory cache
+
+### Added
+
+- **Global Overfast rate limiter** — Thread-safe lock ensures all requests are spaced 1.5s apart
+- **Rate limit feedback** — Refresh command now shows how many accounts were rate-limited
+
+---
+
 ## [2.1.2] - 2024-12-19
 
 ### 🧵 Improved Async & Non-Blocking Threading

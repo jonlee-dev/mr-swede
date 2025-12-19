@@ -190,13 +190,25 @@ class MusicCog(commands.Cog, name="Music"):
             interaction: Discord interaction
             query: Search query or URL
         """
+        import time as time_module
+        start_time = time_module.time()
+        
+        logger.info(
+            "🎵 /play command START",
+            query=query[:80],
+            user=str(interaction.user),
+            user_id=interaction.user.id,
+            guild=interaction.guild.name if interaction.guild else None,
+        )
+        
         # Defer FIRST to avoid "Unknown interaction" timeout errors
         # Discord only gives 3 seconds to respond
         try:
             await interaction.response.defer()
+            logger.debug("Deferred interaction response")
         except discord.NotFound:
             # Interaction already expired (cold start or lag)
-            logger.warning("Interaction expired before defer", query=query)
+            logger.warning("⚠️ Interaction expired before defer", query=query[:80])
             return
         
         # Check if user is in a voice channel
@@ -205,6 +217,7 @@ class MusicCog(commands.Cog, name="Music"):
                 "❌ You must be in a voice channel to use this command.",
                 ephemeral=True,
             )
+            logger.info("❌ /play FAILED - user not in voice channel")
             return
         
         voice_channel = interaction.user.voice.channel
@@ -217,18 +230,23 @@ class MusicCog(commands.Cog, name="Music"):
             # Connect to voice if not already
             voice_client = guild.voice_client
             if not voice_client:
+                logger.info("🔊 Connecting to voice channel", channel=voice_channel.name)
                 voice_client = await voice_channel.connect()
             elif voice_client.channel != voice_channel:
+                logger.info("🔊 Moving to voice channel", channel=voice_channel.name)
                 await voice_client.move_to(voice_channel)
             
             # Handle Spotify URLs (only if Spotify client is available)
             if self.spotify and ("spotify.com" in query or query.startswith("spotify:")):
+                logger.info("🎧 Detected Spotify URL, parsing...")
                 parsed = self.spotify.parse_spotify_url(query)
                 if parsed:
                     item_type, item_id = parsed
+                    logger.info("🎧 Spotify parsed", type=item_type, id=item_id)
                     if item_type == "track":
                         search_query = await self.spotify.get_search_query_for_youtube(item_id)
                         if search_query:
+                            logger.info("🎧 Spotify track → YouTube search", search_query=search_query)
                             query = search_query
                     elif item_type == "playlist":
                         await self._handle_spotify_playlist(interaction, item_id, voice_client)
@@ -236,9 +254,22 @@ class MusicCog(commands.Cog, name="Music"):
             
             # Get audio track from YouTube
             is_url = query.startswith(("http://", "https://"))
-            logger.info("Play command processing", query=query, is_url=is_url)
+            logger.info(
+                "🎵 Fetching audio track",
+                query=query[:80],
+                is_url=is_url,
+            )
             
+            fetch_start = time_module.time()
             track = await self.youtube.get_audio_track(query)
+            fetch_elapsed = time_module.time() - fetch_start
+            
+            logger.info(
+                "🎵 Audio track fetch complete",
+                success=track is not None,
+                title=track.title if track else None,
+                fetch_ms=round(fetch_elapsed * 1000),
+            )
             
             if not track:
                 if is_url:
@@ -302,7 +333,13 @@ class MusicCog(commands.Cog, name="Music"):
                 
                 await interaction.followup.send(embed=embed)
             
-            logger.info("Playing track", title=track.title, user=str(interaction.user))
+            total_elapsed = time_module.time() - start_time
+            logger.info(
+                "✅ /play command SUCCESS",
+                title=track.title,
+                user=str(interaction.user),
+                total_ms=round(total_elapsed * 1000),
+            )
             
         except asyncio.TimeoutError:
             logger.error("Audio extraction timed out", query=query)
@@ -351,10 +388,20 @@ class MusicCog(commands.Cog, name="Music"):
         queue: MusicQueue,
     ) -> None:
         """Play a track and handle queue progression."""
+        import time as time_module
+        play_start = time_module.time()
+        
+        logger.info(
+            "🎵 _play_track START",
+            title=track.title,
+            duration=track.duration_str,
+            url=track.url[:80] if track.url else None,
+        )
+        
         try:
             # Check if voice client is still valid
             if not voice_client or not voice_client.is_connected():
-                logger.warning("Voice client disconnected, cannot play track")
+                logger.warning("⚠️ Voice client disconnected, cannot play track")
                 return
             
             queue.current = track
@@ -382,6 +429,9 @@ class MusicCog(commands.Cog, name="Music"):
                 loop = asyncio.get_running_loop()
                 ffmpeg_executor = get_ffmpeg_executor()
                 
+                logger.info("🔧 Creating FFmpeg audio source...")
+                ffmpeg_start = time_module.time()
+                
                 def _create_ffmpeg_source() -> discord.FFmpegPCMAudio:
                     return discord.FFmpegPCMAudio(
                         track.url,
@@ -394,13 +444,29 @@ class MusicCog(commands.Cog, name="Music"):
                     timeout=30.0,  # 30 second timeout for FFmpeg init
                 )
                 source = discord.PCMVolumeTransformer(source, volume=queue.volume)
+                
+                ffmpeg_elapsed = time_module.time() - ffmpeg_start
+                logger.info(
+                    "✅ FFmpeg source created",
+                    title=track.title,
+                    ffmpeg_ms=round(ffmpeg_elapsed * 1000),
+                )
             except asyncio.TimeoutError:
-                logger.error("FFmpeg initialization timed out", title=track.title)
+                ffmpeg_elapsed = time_module.time() - ffmpeg_start
+                logger.error(
+                    "⏱️ FFmpeg initialization TIMED OUT",
+                    title=track.title,
+                    elapsed_ms=round(ffmpeg_elapsed * 1000),
+                )
                 # Try to play next track instead of hanging
                 asyncio.create_task(self._play_next(voice_client, queue))
                 return
             except Exception as e:
-                logger.error("Failed to create audio source", error=str(e), title=track.title)
+                logger.error(
+                    "❌ Failed to create audio source",
+                    error=str(e),
+                    title=track.title,
+                )
                 # Try to play next track instead of crashing
                 asyncio.create_task(self._play_next(voice_client, queue))
                 return
@@ -425,13 +491,27 @@ class MusicCog(commands.Cog, name="Music"):
             
             voice_client.play(source, after=after_playing)
             
+            total_play_elapsed = time_module.time() - play_start
+            logger.info(
+                "▶️ Playback STARTED",
+                title=track.title,
+                duration=track.duration_str,
+                setup_ms=round(total_play_elapsed * 1000),
+                queue_length=len(queue),
+            )
+            
             # Pre-fetch next track in queue (if any) to reduce wait time
             if queue.tracks:
                 next_track = queue.tracks[0]  # Peek without removing
+                logger.debug("Pre-fetching next track", title=next_track.title)
                 asyncio.create_task(self._prefetch_track(next_track.webpage_url))
                 
         except Exception as e:
-            logger.error("Failed to play track", error=str(e), title=track.title)
+            logger.error(
+                "❌ _play_track FAILED",
+                error=str(e),
+                title=track.title,
+            )
             # Don't crash - try to play next track
             try:
                 await self._play_next(voice_client, queue)

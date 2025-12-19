@@ -1,5 +1,6 @@
 """Overwatch stats tracking commands."""
 
+import asyncio
 import time
 from datetime import UTC, datetime
 
@@ -17,25 +18,49 @@ logger = get_logger(__name__)
 # Simple in-memory cache to reduce API calls
 # Format: {battletag: (stats, timestamp)}
 _stats_cache: dict[str, tuple[CompetitiveStats, float]] = {}
-CACHE_TTL_SECONDS = 300  # 5 minutes
+CACHE_TTL_SECONDS = 600  # 10 minutes (increased due to strict rate limits)
+
+# Rate limiting - Overfast API allows ~1 request per second
+RATE_LIMIT_DELAY = 1.5  # seconds between API calls
 
 
 def _get_cached_stats(battletag: str) -> CompetitiveStats | None:
     """Get stats from cache if still valid."""
     if battletag in _stats_cache:
         stats, timestamp = _stats_cache[battletag]
-        if time.time() - timestamp < CACHE_TTL_SECONDS:
-            logger.debug("Cache hit", battletag=battletag)
+        age = time.time() - timestamp
+        if age < CACHE_TTL_SECONDS:
+            remaining = CACHE_TTL_SECONDS - age
+            logger.info(
+                "📦 Cache HIT",
+                battletag=battletag,
+                cache_age_seconds=round(age),
+                ttl_remaining_seconds=round(remaining),
+            )
             return stats
         else:
+            logger.info(
+                "📦 Cache EXPIRED",
+                battletag=battletag,
+                cache_age_seconds=round(age),
+            )
             del _stats_cache[battletag]
+    else:
+        logger.info("📦 Cache MISS", battletag=battletag)
     return None
 
 
 def _cache_stats(battletag: str, stats: CompetitiveStats) -> None:
     """Cache stats for a player."""
     _stats_cache[battletag] = (stats, time.time())
-    logger.debug("Cached stats", battletag=battletag)
+    logger.info(
+        "📦 Cache STORE",
+        battletag=battletag,
+        ttl_seconds=CACHE_TTL_SECONDS,
+        tank=stats.tank.display,
+        damage=stats.damage.display,
+        support=stats.support.display,
+    )
 
 
 class OverwatchCog(commands.Cog, name="Overwatch"):
@@ -67,6 +92,15 @@ class OverwatchCog(commands.Cog, name="Overwatch"):
             interaction: Discord interaction
             battletag: Player's BattleTag
         """
+        logger.info(
+            "🎯 /ow stats command START",
+            battletag=battletag,
+            user=str(interaction.user),
+            user_id=interaction.user.id,
+            guild=interaction.guild.name if interaction.guild else None,
+        )
+        start_time = time.time()
+        
         await interaction.response.defer()
         
         try:
@@ -75,15 +109,23 @@ class OverwatchCog(commands.Cog, name="Overwatch"):
             from_cache = stats is not None
             
             if not stats:
+                logger.info("🔄 Fetching fresh stats from API", battletag=battletag)
                 stats = await self.overfast.get_competitive_stats(battletag)
                 _cache_stats(battletag, stats)
             
             embed = self._create_stats_embed(battletag, stats)
             if from_cache:
-                embed.set_footer(text="📦 Cached data (refreshes every 5 min)")
+                embed.set_footer(text="📦 Cached data (refreshes every 10 min)")
             await interaction.followup.send(embed=embed)
             
-            logger.info("Stats fetched", battletag=battletag, user=str(interaction.user), cached=from_cache)
+            elapsed = time.time() - start_time
+            logger.info(
+                "✅ /ow stats command SUCCESS",
+                battletag=battletag,
+                user=str(interaction.user),
+                cached=from_cache,
+                elapsed_ms=round(elapsed * 1000),
+            )
             
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 429:
@@ -163,8 +205,11 @@ class OverwatchCog(commands.Cog, name="Overwatch"):
                 await interaction.followup.send(embed=embed)
                 return
             
-            # Verify the account exists
-            stats = await self.overfast.get_competitive_stats(battletag)
+            # Verify the account exists (check cache first to avoid rate limits)
+            stats = _get_cached_stats(battletag)
+            if not stats:
+                stats = await self.overfast.get_competitive_stats(battletag)
+                _cache_stats(battletag, stats)
             
             # If setting as main, unset other main accounts
             if main:
@@ -354,10 +399,17 @@ class OverwatchCog(commands.Cog, name="Overwatch"):
             
             updated = 0
             errors = 0
+            rate_limited = 0
             
-            for account in accounts:
+            for i, account in enumerate(accounts):
+                # Add delay between requests to avoid rate limiting
+                # Skip delay for first request
+                if i > 0:
+                    await asyncio.sleep(RATE_LIMIT_DELAY)
+                
                 try:
                     stats = await self.overfast.get_competitive_stats(account.battle_tag)
+                    _cache_stats(account.battle_tag, stats)  # Update cache
                     await self.db.update_account_stats(account.id, stats)
                     
                     # Record history
@@ -369,6 +421,20 @@ class OverwatchCog(commands.Cog, name="Overwatch"):
                     await self.db.add_stats_history(history)
                     
                     updated += 1
+                except httpx.HTTPStatusError as e:
+                    if e.response.status_code == 429:
+                        rate_limited += 1
+                        logger.warning(
+                            "Rate limited during refresh",
+                            battletag=account.battle_tag,
+                        )
+                    else:
+                        errors += 1
+                        logger.error(
+                            "Failed to refresh account", 
+                            battletag=account.battle_tag, 
+                            status=e.response.status_code,
+                        )
                 except Exception as e:
                     logger.error(
                         "Failed to refresh account", 
@@ -377,16 +443,25 @@ class OverwatchCog(commands.Cog, name="Overwatch"):
                     )
                     errors += 1
             
+            has_issues = errors > 0 or rate_limited > 0
             embed = discord.Embed(
                 title="🔄 Stats Refreshed",
-                description=f"Updated {updated} account(s)",
-                color=discord.Color.green() if errors == 0 else discord.Color.orange(),
+                description=f"Updated {updated} of {len(accounts)} account(s)",
+                color=discord.Color.green() if not has_issues else discord.Color.orange(),
             )
+            
+            if rate_limited > 0:
+                embed.add_field(
+                    name="⏳ Rate Limited",
+                    value=f"{rate_limited} account(s) skipped due to API limits.\nTry again in a few minutes.",
+                    inline=False,
+                )
             
             if errors > 0:
                 embed.add_field(
                     name="⚠️ Errors",
                     value=f"Failed to update {errors} account(s)",
+                    inline=False,
                 )
             
             await interaction.followup.send(embed=embed)

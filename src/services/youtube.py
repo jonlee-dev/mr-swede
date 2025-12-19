@@ -182,9 +182,20 @@ class YouTubeAudioClient:
     
     def _build_options(self) -> dict[str, Any]:
         """Build yt-dlp options, including cookies if available."""
+        # Discord voice uses 48kHz 64kbps opus - no point getting high quality
+        # Prefer lower quality for faster extraction and less bandwidth
         options = {
-            # Prefer opus/webm audio (Discord native, faster)
-            "format": "bestaudio[acodec=opus]/bestaudio[acodec=vorbis]/bestaudio/best",
+            # Prefer low-quality opus/webm (Discord native, fastest)
+            # worstaudio[acodec=opus] = smallest opus stream
+            # bestaudio[abr<=96] = any audio under 96kbps
+            # This dramatically speeds up extraction
+            "format": (
+                "worstaudio[acodec=opus]/"
+                "worstaudio[acodec=vorbis]/"
+                "bestaudio[abr<=96]/"
+                "worstaudio/"
+                "bestaudio"
+            ),
             "noplaylist": True,
             "quiet": True,
             "no_warnings": True,
@@ -278,11 +289,26 @@ class YouTubeAudioClient:
         cache_key = self._get_cache_key(url_or_query)
         if cache_key in _audio_url_cache:
             track, timestamp = _audio_url_cache[cache_key]
-            if time.time() - timestamp < AUDIO_URL_CACHE_TTL:
-                logger.debug("Cache hit for audio track", key=cache_key)
+            age = time.time() - timestamp
+            if age < AUDIO_URL_CACHE_TTL:
+                remaining = AUDIO_URL_CACHE_TTL - age
+                logger.info(
+                    "📦 Audio cache HIT",
+                    cache_key=cache_key,
+                    title=track.title,
+                    cache_age_minutes=round(age / 60, 1),
+                    ttl_remaining_minutes=round(remaining / 60, 1),
+                )
                 return track
             else:
+                logger.info(
+                    "📦 Audio cache EXPIRED",
+                    cache_key=cache_key,
+                    cache_age_hours=round(age / 3600, 1),
+                )
                 del _audio_url_cache[cache_key]
+        else:
+            logger.info("📦 Audio cache MISS", cache_key=cache_key, query=url_or_query[:50])
         return None
     
     def _cache_track(self, url_or_query: str, track: AudioTrack) -> None:
@@ -295,7 +321,13 @@ class YouTubeAudioClient:
             webpage_key = self._get_cache_key(track.webpage_url)
             _audio_url_cache[webpage_key] = (track, time.time())
         
-        logger.debug("Cached audio track", key=cache_key, title=track.title)
+        logger.info(
+            "📦 Audio cache STORE",
+            cache_key=cache_key,
+            title=track.title,
+            duration=track.duration_str,
+            ttl_hours=AUDIO_URL_CACHE_TTL / 3600,
+        )
     
     async def get_audio_track(
         self, 
@@ -319,78 +351,135 @@ class YouTubeAudioClient:
         
         options = self._ensure_initialized()
         
+        is_url = url_or_query.startswith(("http://", "https://"))
+        
         def _extract() -> dict[str, Any] | None:
+            extract_start = time.time()
             try:
                 with yt_dlp.YoutubeDL(options) as ydl:
                     # If it's not a URL, search for it
-                    if not url_or_query.startswith(("http://", "https://")):
+                    if not is_url:
                         search_url = f"ytsearch1:{url_or_query}"
-                        logger.debug("Searching YouTube", search_url=search_url)
+                        logger.info(
+                            "🔍 YouTube SEARCH start",
+                            query=url_or_query,
+                            search_url=search_url,
+                        )
                         info = ydl.extract_info(search_url, download=False)
                         
                         if not info:
-                            logger.warning("Search returned no results", query=url_or_query)
+                            logger.warning("🔍 YouTube SEARCH returned no results", query=url_or_query)
                             return None
                         
                         if "entries" in info:
                             entries = info["entries"]
                             if not entries:
-                                logger.warning("Search returned empty entries", query=url_or_query)
+                                logger.warning("🔍 YouTube SEARCH returned empty entries", query=url_or_query)
                                 return None
                             info = entries[0]
                             if not info:
-                                logger.warning("First search entry is None", query=url_or_query)
+                                logger.warning("🔍 YouTube SEARCH first entry is None", query=url_or_query)
                                 return None
                         
-                        logger.debug("Search found", title=info.get("title"))
+                        elapsed = time.time() - extract_start
+                        logger.info(
+                            "🔍 YouTube SEARCH success",
+                            query=url_or_query,
+                            title=info.get("title"),
+                            elapsed_ms=round(elapsed * 1000),
+                        )
                     else:
+                        logger.info(
+                            "🎬 YouTube EXTRACT start",
+                            url=url_or_query[:80],
+                        )
                         info = ydl.extract_info(url_or_query, download=False)
+                        elapsed = time.time() - extract_start
+                        logger.info(
+                            "🎬 YouTube EXTRACT success",
+                            title=info.get("title") if info else None,
+                            elapsed_ms=round(elapsed * 1000),
+                        )
                     
                     return info
             except Exception as e:
+                elapsed = time.time() - extract_start
                 error_str = str(e)
                 # Detect common YouTube errors
                 if "Sign in" in error_str or "bot" in error_str.lower():
-                    logger.error("YouTube auth error (cookies may be needed/expired)", 
-                                url=url_or_query, error=error_str)
+                    logger.error(
+                        "❌ YouTube AUTH ERROR (cookies may be needed/expired)",
+                        url=url_or_query[:80],
+                        error=error_str[:200],
+                        elapsed_ms=round(elapsed * 1000),
+                    )
                 elif "Video unavailable" in error_str:
-                    logger.warning("Video unavailable", url=url_or_query)
+                    logger.warning(
+                        "❌ Video unavailable",
+                        url=url_or_query[:80],
+                        elapsed_ms=round(elapsed * 1000),
+                    )
                 else:
-                    logger.error("Failed to extract audio", url=url_or_query, error=error_str)
+                    logger.error(
+                        "❌ YouTube extraction FAILED",
+                        url=url_or_query[:80],
+                        error=error_str[:200],
+                        elapsed_ms=round(elapsed * 1000),
+                    )
                 return None
         
-        logger.info("Extracting audio", url=url_or_query)
+        logger.info(
+            "🎵 get_audio_track START",
+            query=url_or_query[:80],
+            is_url=is_url,
+            use_cache=use_cache,
+        )
         
         loop = asyncio.get_running_loop()
+        overall_start = time.time()
         try:
             info = await asyncio.wait_for(
                 loop.run_in_executor(_ytdl_executor, _extract),
                 timeout=YTDL_TIMEOUT,
             )
         except asyncio.TimeoutError:
-            logger.error("Audio extraction timed out", url=url_or_query)
+            elapsed = time.time() - overall_start
+            logger.error(
+                "⏱️ Audio extraction TIMED OUT",
+                url=url_or_query[:80],
+                timeout_seconds=YTDL_TIMEOUT,
+                elapsed_ms=round(elapsed * 1000),
+            )
             return None
         
         if not info:
+            elapsed = time.time() - overall_start
+            logger.warning(
+                "🎵 get_audio_track returned None",
+                query=url_or_query[:80],
+                elapsed_ms=round(elapsed * 1000),
+            )
             return None
         
-        # Find the best audio format URL
+        # Find audio format URL - prefer lowest quality (Discord only supports 64kbps anyway)
         audio_url = info.get("url")
         if not audio_url:
             # Try to get from formats
             formats = info.get("formats", [])
             audio_formats = [f for f in formats if f.get("acodec") != "none"]
             if audio_formats:
-                # Prefer opus (Discord native) > vorbis > others
-                for codec in ["opus", "vorbis"]:
-                    for fmt in audio_formats:
-                        if fmt.get("acodec") == codec:
-                            audio_url = fmt.get("url")
-                            break
-                    if audio_url:
+                # Sort by bitrate (lowest first) - we don't need high quality
+                audio_formats.sort(key=lambda f: f.get("abr") or f.get("tbr") or 999)
+                
+                # Prefer opus (Discord native) at lowest bitrate
+                for fmt in audio_formats:
+                    if fmt.get("acodec") == "opus":
+                        audio_url = fmt.get("url")
                         break
+                
+                # Fall back to any low-bitrate format
                 if not audio_url:
-                    audio_url = audio_formats[-1].get("url")
+                    audio_url = audio_formats[0].get("url")
         
         if not audio_url:
             logger.error("No audio URL found", title=info.get("title"))
