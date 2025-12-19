@@ -139,14 +139,15 @@ mr-swede/
 │   ├── main.py              # Entry point with FastAPI health check
 │   ├── bot.py               # Discord bot setup and configuration
 │   ├── config/
-│   │   ├── settings.py      # Pydantic settings with GSM integration
+│   │   ├── settings.py      # Pydantic settings for non-secret config
+│   │   ├── secrets.py       # GSM integration for JSON secrets
 │   │   └── logging.py       # Structured logging with structlog
 │   ├── cogs/
 │   │   ├── general.py       # Utility commands (/ping, /help, etc.)
 │   │   ├── overwatch.py     # Overwatch tracking commands
 │   │   └── music.py         # Music playback commands
 │   ├── services/
-│   │   ├── base.py          # Base HTTP client with OAuth support
+│   │   ├── base.py          # Base HTTP client with retry/error handling
 │   │   ├── overfast.py      # Overfast API client
 │   │   ├── blizzard.py      # Blizzard Battle.net API client
 │   │   ├── spotify.py       # Spotify API client
@@ -163,6 +164,7 @@ mr-swede/
 ├── Dockerfile               # Multi-stage build for Cloud Run
 ├── cloudbuild.yaml          # GCP Cloud Build CI/CD pipeline
 ├── pyproject.toml           # Poetry configuration
+├── env.example              # Environment variable template
 ├── TODO.md                  # Setup guide & manual tasks
 └── CHANGELOG.md             # Release notes
 ```
@@ -201,27 +203,83 @@ The repository includes a CI workflow (`.github/workflows/ci.yaml`) that:
 
 ### Environment Variables
 
+#### Core Settings
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `ENV` | ❌ | `development` | Environment (`development`, `production`) |
+| `DEBUG` | ❌ | `false` | Enable debug mode |
+| `LOG_LEVEL` | ❌ | `INFO` | Logging level |
+| `LOG_FORMAT` | ❌ | `json` | Log format (`console` or `json`) |
+
+#### Discord Settings
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `DISCORD_BOT_NAME` | ❌ | `mr-swede` | Bot name in GSM secrets (`mr-swede` or `ow2-ranked-bot`) |
+| `DISCORD_GUILD_ID` | ❌ | — | Guild ID for fast command sync (dev only) |
+
+#### GCP Settings
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `GCP_PROJECT_ID` | ❌ | Auto-detected | GCP project ID |
+| `FIRESTORE_COLLECTION_PREFIX` | ❌ | `mr_swede_` | Firestore collection prefix |
+| `HOST` | ❌ | `0.0.0.0` | Server host (Cloud Run) |
+| `PORT` | ❌ | `8080` | Server port (Cloud Run) |
+
+#### Local Development (when GSM unavailable)
+
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `DISCORD_TOKEN` | ✅ | Discord bot token |
-| `DISCORD_GUILD_ID` | ❌ | Guild ID for fast command sync (dev) |
-| `GCP_PROJECT_ID` | ❌ | GCP project (auto-detected on Cloud Run) |
-| `USE_GSM` | ❌ | Use Secret Manager for secrets (default: `true`) |
-| `BLIZZARD_CLIENT_ID` | ❌ | For Blizzard API features |
-| `BLIZZARD_CLIENT_SECRET` | ❌ | For Blizzard API features |
-| `SPOTIFY_CLIENT_ID` | ❌ | For Spotify URL support |
-| `SPOTIFY_CLIENT_SECRET` | ❌ | For Spotify URL support |
-| `LOG_LEVEL` | ❌ | Logging level (default: `INFO`) |
-| `LOG_FORMAT` | ❌ | `console` or `json` (default: `json`) |
+| `DISCORD_TOKEN` | ✅* | Discord bot token |
+| `DISCORD_APPLICATION_ID` | ❌ | Discord application ID |
+| `BLIZZARD_CLIENT_ID` | ❌ | Blizzard OAuth client ID |
+| `BLIZZARD_CLIENT_SECRET` | ❌ | Blizzard OAuth client secret |
+| `BLIZZARD_REGION` | ❌ | API region (`us`, `eu`, `kr`, `tw`) |
+| `SPOTIFY_CLIENT_ID` | ❌ | Spotify API client ID |
+| `SPOTIFY_CLIENT_SECRET` | ❌ | Spotify API client secret |
+
+> *Required only when running locally without GSM access
 
 ### Google Secret Manager
 
-When `USE_GSM=true`, the bot loads secrets from GSM with these names:
-- `discord-token`
-- `blizzard-client-id`
-- `blizzard-client-secret`
-- `spotify-client-id`
-- `spotify-client-secret`
+In production, secrets are stored as **JSON objects** in GSM:
+
+#### Secret Structure
+
+```
+blizzard-secrets (JSON)
+├── client_id
+└── client_secret
+
+discord-bot-secrets (JSON)
+├── mr-swede.id
+├── mr-swede.token
+├── mr-swede.public_key
+├── ow2-ranked-bot.id
+├── ow2-ranked-bot.token
+└── ow2-ranked-bot.public_key
+
+spotify-secrets (JSON)
+├── client_id
+└── client_secret
+```
+
+#### Example JSON for `discord-bot-secrets`:
+
+```json
+{
+  "mr-swede.id": "123456789",
+  "mr-swede.token": "your-bot-token",
+  "mr-swede.public_key": "your-public-key",
+  "ow2-ranked-bot.id": "987654321",
+  "ow2-ranked-bot.token": "other-bot-token",
+  "ow2-ranked-bot.public_key": "other-public-key"
+}
+```
+
+The bot automatically loads from GSM in Cloud Run. For local development, set the environment variables above instead
 
 ---
 
