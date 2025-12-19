@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "mr-swede"
-version = "2.1.0"
+version = "2.1.1"
 description = "A Swiss-army-knife Discord bot for Overwatch stats, music streaming, and more"
 authors = ["Jonathan Lee"]
 readme = "README.md"

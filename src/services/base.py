@@ -34,10 +34,13 @@ class BaseAPIClient:
     def client(self) -> httpx.AsyncClient:
         """Get or create the HTTP client."""
         if self._client is None or self._client.is_closed:
+            # Explicitly disable retries - APIs have strict rate limits
+            transport = httpx.AsyncHTTPTransport(retries=0)
             self._client = httpx.AsyncClient(
                 base_url=self.base_url,
                 timeout=self.timeout,
                 headers=self._default_headers,
+                transport=transport,
             )
         return self._client
     
@@ -144,8 +147,9 @@ class OAuthClient(BaseAPIClient):
         if self._access_token and time.time() < self._token_expires_at - 60:
             return self._access_token
         
-        # Request new token
-        async with httpx.AsyncClient() as client:
+        # Request new token (no retries - APIs have strict rate limits)
+        transport = httpx.AsyncHTTPTransport(retries=0)
+        async with httpx.AsyncClient(transport=transport) as client:
             response = await client.post(
                 self.token_url,
                 data={"grant_type": "client_credentials"},

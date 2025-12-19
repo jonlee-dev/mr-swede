@@ -472,3 +472,4 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ### Note:
 Smol Server ID: 635551370761601062
+Owner ID: 2584733691276165234

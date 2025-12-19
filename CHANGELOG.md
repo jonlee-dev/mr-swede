@@ -5,6 +5,49 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.1] - 2024-12-19
+
+### 🎵 Music Playback Performance Fix
+
+This release fixes the "websocket is Xs behind" error that caused Discord connection lag during music playback.
+
+### Fixed
+
+- **Websocket lag during music playback** — `yt-dlp` operations now run in a dedicated thread pool with timeouts, preventing event loop blocking
+- **YouTube cookies blocking startup** — Cookies are now pre-loaded asynchronously during bot startup instead of on first play command
+- **Deprecated asyncio patterns** — Replaced `asyncio.get_event_loop().run_in_executor()` with `asyncio.get_running_loop()` for Python 3.10+ compatibility
+
+### Changed
+
+- **yt-dlp execution model** — All YouTube operations now use a dedicated `ThreadPoolExecutor` with 2 workers
+- **Timeouts** — Added 30-second timeout for audio extraction, 60-second timeout for playlist extraction
+- **Socket timeout** — Added 15-second socket timeout to yt-dlp options to prevent hanging
+- **Lazy initialization** — `YouTubeAudioClient` now lazily initializes options to avoid blocking on import
+
+### Added
+
+- **`/refresh-cookies` command** — Owner-only admin command to refresh YouTube cookies from GSM without restarting the bot
+- **`preload_cookies()` function** — Async function to fetch YouTube cookies from GSM during bot startup
+- **Cookies caching** — Cookies fetched once and cached to `/tmp/youtube_cookies.txt`
+
+### Changed (API Rate Limiting)
+
+- **Disabled all API retries** — APIs have strict rate limits, so all retry logic has been removed:
+  - `yt-dlp`: Set `retries=0`, `fragment_retries=0`, `extractor_retries=0`, `file_access_retries=0`
+  - `spotipy`: Set `retries=0`, `status_retries=0`
+  - `httpx` (Blizzard, Overfast): Added explicit `AsyncHTTPTransport(retries=0)`
+
+### Technical Details
+
+The "Can't keep up, websocket is Xs behind" error occurs when synchronous operations block Python's async event loop. Discord.py's heartbeat mechanism expects timely responses, and blocking operations cause the connection to fall behind.
+
+**Root causes fixed:**
+1. `yt-dlp.extract_info()` — CPU-intensive operation moved to dedicated thread pool
+2. `SecretManagerServiceClient.access_secret_version()` — Network I/O moved to thread pool
+3. No timeout handling — Operations could hang indefinitely
+
+---
+
 ## [2.1.0] - 2024-12-18
 
 ### 🔐 Secrets Management & Testing Improvements

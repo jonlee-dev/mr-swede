@@ -69,7 +69,12 @@ class SpotifyClient:
                 client_id=self._client_id,
                 client_secret=self._client_secret,
             )
-            self._client = spotipy.Spotify(auth_manager=auth_manager)
+            # Disable retries - APIs have strict rate limits
+            self._client = spotipy.Spotify(
+                auth_manager=auth_manager,
+                retries=0,
+                status_retries=0,
+            )
         return self._client
     
     def get_auth_url(self, state: str | None = None) -> str:

@@ -1,6 +1,7 @@
 """Music playback commands for Discord voice channels."""
 
 import asyncio
+import os
 from collections import deque
 from typing import Any
 
@@ -9,10 +10,14 @@ from discord import app_commands
 from discord.ext import commands
 
 from src.config.logging import get_logger
-from src.services import YouTubeAudioClient, get_spotify_client
-from src.services.youtube import AudioTrack
+from src.services import YouTubeAudioClient, get_spotify_client, preload_cookies
+from src.services.youtube import AudioTrack, COOKIES_TEMP_FILE, _fetch_cookies_from_gsm_async
 
 logger = get_logger(__name__)
+
+# Bot owner Discord ID for cookie expiration notifications
+# Set via DISCORD_OWNER_ID env var
+BOT_OWNER_ID = os.environ.get("DISCORD_OWNER_ID", "")
 
 
 class MusicQueue:
@@ -68,9 +73,68 @@ class MusicCog(commands.Cog, name="Music"):
         self.youtube = YouTubeAudioClient()
         self.spotify = get_spotify_client()  # May be None if not configured
         self.queues: dict[int, MusicQueue] = {}  # guild_id -> queue
+        self._cookie_expiry_notified = False  # Track if we've already notified
         
         if not self.spotify:
             logger.warning("Spotify client not available - Spotify URL support disabled")
+    
+    async def _notify_cookie_expiry(self) -> None:
+        """Send a one-time notification to the bot owner about cookie expiration."""
+        if self._cookie_expiry_notified:
+            return  # Already notified, don't spam
+        
+        self._cookie_expiry_notified = True
+        logger.warning("YouTube cookies have expired - notifying owner")
+        
+        if not BOT_OWNER_ID:
+            logger.warning(
+                "DISCORD_OWNER_ID not set - cannot send cookie expiry notification. "
+                "Set this env var to receive DM notifications."
+            )
+            return
+        
+        try:
+            owner_id = int(BOT_OWNER_ID)
+            owner = await self.bot.fetch_user(owner_id)
+            
+            if owner:
+                embed = discord.Embed(
+                    title="⚠️ YouTube Cookies Expired",
+                    description=(
+                        "The YouTube cookies have expired and music playback is failing.\n\n"
+                        "**To fix:**\n"
+                        "1. Export fresh cookies from your browser\n"
+                        "2. Upload to Secret Manager:\n"
+                        "```\n"
+                        "gcloud secrets versions add youtube-cookies \\\n"
+                        "  --data-file=cookies.txt \\\n"
+                        "  --project=mr-swede\n"
+                        "```\n"
+                        "3. The bot will automatically pick up the new cookies."
+                    ),
+                    color=discord.Color.orange(),
+                )
+                embed.set_footer(text="This notification will only be sent once per restart.")
+                
+                await owner.send(embed=embed)
+                logger.info("Sent cookie expiry notification to owner", owner_id=owner_id)
+        except ValueError:
+            logger.error("Invalid DISCORD_OWNER_ID - must be an integer")
+        except discord.Forbidden:
+            logger.warning("Cannot DM owner - they may have DMs disabled")
+        except Exception as e:
+            logger.error("Failed to send cookie expiry notification", error=str(e))
+    
+    def _is_cookie_expiry_error(self, error: str) -> bool:
+        """Check if an error indicates YouTube cookie expiration."""
+        cookie_error_patterns = [
+            "Sign in to confirm you're not a bot",
+            "cookies",
+            "login required",
+            "private video",
+        ]
+        error_lower = error.lower()
+        return any(pattern.lower() in error_lower for pattern in cookie_error_patterns)
     
     def get_queue(self, guild_id: int) -> MusicQueue:
         """Get or create a queue for a guild."""
@@ -81,6 +145,8 @@ class MusicCog(commands.Cog, name="Music"):
     @commands.Cog.listener()
     async def on_ready(self) -> None:
         """Handle bot ready event."""
+        # Pre-load YouTube cookies to avoid blocking during playback
+        await preload_cookies()
         logger.info("MusicCog ready", spotify_enabled=self.spotify is not None)
     
     @commands.Cog.listener()
@@ -205,12 +271,28 @@ class MusicCog(commands.Cog, name="Music"):
             logger.info("Playing track", title=track.title, user=str(interaction.user))
             
         except Exception as e:
-            logger.error("Failed to play", query=query, error=str(e))
-            embed = discord.Embed(
-                title="❌ Error",
-                description="An error occurred while trying to play.",
-                color=discord.Color.red(),
-            )
+            error_str = str(e)
+            logger.error("Failed to play", query=query, error=error_str)
+            
+            # Check if this is a cookie expiration error
+            if self._is_cookie_expiry_error(error_str):
+                embed = discord.Embed(
+                    title="❌ YouTube Authentication Required",
+                    description=(
+                        "YouTube is blocking the request. This usually means cookies have expired.\n\n"
+                        "The bot owner has been notified."
+                    ),
+                    color=discord.Color.red(),
+                )
+                # Notify owner (only once)
+                asyncio.create_task(self._notify_cookie_expiry())
+            else:
+                embed = discord.Embed(
+                    title="❌ Error",
+                    description="An error occurred while trying to play.",
+                    color=discord.Color.red(),
+                )
+            
             await interaction.followup.send(embed=embed)
     
     async def _play_track(
@@ -534,6 +616,88 @@ class MusicCog(commands.Cog, name="Music"):
             embed.add_field(name="Link", value=f"[YouTube]({track.webpage_url})", inline=False)
         
         await interaction.response.send_message(embed=embed)
+    
+    @app_commands.command(name="refresh-cookies", description="[Admin] Refresh YouTube cookies from Secret Manager")
+    async def refresh_cookies(self, interaction: discord.Interaction) -> None:
+        """Refresh YouTube cookies from GSM. Owner-only command.
+        
+        Use this after updating the youtube-cookies secret in GSM.
+        """
+        # Check if user is the bot owner
+        if not BOT_OWNER_ID:
+            await interaction.response.send_message(
+                "❌ `DISCORD_OWNER_ID` not configured. Cannot verify admin access.",
+                ephemeral=True,
+            )
+            return
+        
+        try:
+            owner_id = int(BOT_OWNER_ID)
+        except ValueError:
+            await interaction.response.send_message(
+                "❌ Invalid `DISCORD_OWNER_ID` configuration.",
+                ephemeral=True,
+            )
+            return
+        
+        if interaction.user.id != owner_id:
+            await interaction.response.send_message(
+                "❌ This command is restricted to the bot owner.",
+                ephemeral=True,
+            )
+            return
+        
+        await interaction.response.defer(ephemeral=True)
+        
+        try:
+            # Delete cached cookies file
+            if COOKIES_TEMP_FILE.exists():
+                COOKIES_TEMP_FILE.unlink()
+                logger.info("Deleted cached YouTube cookies")
+            
+            # Re-fetch from GSM
+            new_path = await _fetch_cookies_from_gsm_async()
+            
+            if new_path and COOKIES_TEMP_FILE.exists():
+                # Reset the YouTube client to pick up new cookies
+                self.youtube = YouTubeAudioClient()
+                
+                # Reset cookie expiry notification flag
+                self._cookie_expiry_notified = False
+                
+                embed = discord.Embed(
+                    title="✅ Cookies Refreshed",
+                    description=(
+                        "Successfully fetched new YouTube cookies from Secret Manager.\n\n"
+                        "The bot will now use the updated cookies for playback."
+                    ),
+                    color=discord.Color.green(),
+                )
+                embed.add_field(
+                    name="Cache Location", 
+                    value=f"`{COOKIES_TEMP_FILE}`", 
+                    inline=False
+                )
+            else:
+                embed = discord.Embed(
+                    title="⚠️ No Cookies Found",
+                    description=(
+                        "Could not fetch cookies from Secret Manager.\n\n"
+                        "Make sure the `youtube-cookies` secret exists and contains valid Netscape cookie data."
+                    ),
+                    color=discord.Color.orange(),
+                )
+            
+            await interaction.followup.send(embed=embed, ephemeral=True)
+            
+        except Exception as e:
+            logger.error("Failed to refresh cookies", error=str(e))
+            embed = discord.Embed(
+                title="❌ Refresh Failed",
+                description=f"Error: {str(e)}",
+                color=discord.Color.red(),
+            )
+            await interaction.followup.send(embed=embed, ephemeral=True)
 
 
 async def setup(bot: commands.Bot) -> None:

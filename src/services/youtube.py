@@ -6,8 +6,9 @@ This is used for Discord voice channel playback.
 
 import asyncio
 import os
-import tempfile
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -23,11 +24,17 @@ COOKIES_FILE_LOCAL = Path("cookies.txt")
 COOKIES_TEMP_FILE = Path("/tmp/youtube_cookies.txt")
 
 # Secret Manager path for cookies
-YOUTUBE_COOKIES_SECRET = "projects/749144818572/secrets/youtube-cookies/versions/latest"
+YOUTUBE_COOKIES_SECRET = "projects/mr-swede/secrets/youtube-cookies/versions/latest"
+
+# Dedicated thread pool for yt-dlp operations (prevents blocking main event loop)
+_ytdl_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="ytdl")
+
+# Timeout for yt-dlp operations (seconds)
+YTDL_TIMEOUT = 30
 
 
-def _fetch_cookies_from_gsm() -> str | None:
-    """Fetch YouTube cookies from Google Secret Manager.
+def _fetch_cookies_from_gsm_sync() -> str | None:
+    """Fetch YouTube cookies from Google Secret Manager (synchronous).
     
     Returns:
         Path to temporary cookies file, or None if not available
@@ -62,18 +69,25 @@ def _fetch_cookies_from_gsm() -> str | None:
         return None
 
 
-def _get_cookies_path() -> str | None:
-    """Get the path to the cookies file if available.
+async def _fetch_cookies_from_gsm_async() -> str | None:
+    """Fetch YouTube cookies from GSM asynchronously."""
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(_ytdl_executor, _fetch_cookies_from_gsm_sync)
+
+
+def _get_cookies_path_sync() -> str | None:
+    """Get the path to the cookies file if available (synchronous).
     
     Checks in order:
-    1. Secret Manager (youtube-cookies secret)
+    1. Cached temp file (already fetched from GSM)
     2. Local file at /app/cookies.txt (Docker)
     3. Local file at ./cookies.txt (development)
+    
+    NOTE: Does NOT fetch from GSM - use preload_cookies() first!
     """
-    # Try Secret Manager first
-    gsm_path = _fetch_cookies_from_gsm()
-    if gsm_path:
-        return gsm_path
+    # Check cached temp file first (from prior GSM fetch)
+    if COOKIES_TEMP_FILE.exists() and COOKIES_TEMP_FILE.stat().st_size > 0:
+        return str(COOKIES_TEMP_FILE)
     
     # Fall back to local files
     for path in [COOKIES_FILE, COOKIES_FILE_LOCAL]:
@@ -82,6 +96,23 @@ def _get_cookies_path() -> str | None:
             return str(path)
     
     return None
+
+
+async def preload_cookies() -> None:
+    """Pre-load cookies from GSM during bot startup.
+    
+    Call this during bot initialization to avoid blocking during playback.
+    """
+    logger.info("Pre-loading YouTube cookies...")
+    await _fetch_cookies_from_gsm_async()
+    
+    if COOKIES_TEMP_FILE.exists():
+        logger.info("YouTube cookies loaded successfully")
+    else:
+        logger.warning(
+            "No YouTube cookies available - playback may fail. "
+            "See TODO.md for instructions on setting up cookies."
+        )
 
 
 @dataclass
@@ -116,9 +147,20 @@ class YouTubeAudioClient:
     }
     
     def __init__(self) -> None:
-        """Initialize the YouTube audio client."""
-        self._options = self._build_options()
-        self._ydl = yt_dlp.YoutubeDL(self._options)
+        """Initialize the YouTube audio client.
+        
+        NOTE: Call preload_cookies() before using this client to ensure
+        cookies are loaded without blocking the event loop.
+        """
+        self._options: dict[str, Any] | None = None
+        self._initialized = False
+    
+    def _ensure_initialized(self) -> dict[str, Any]:
+        """Lazily initialize options (uses cached cookies only)."""
+        if self._options is None:
+            self._options = self._build_options()
+            self._initialized = True
+        return self._options
     
     def _build_options(self) -> dict[str, Any]:
         """Build yt-dlp options, including cookies if available."""
@@ -133,17 +175,24 @@ class YouTubeAudioClient:
             "logtostderr": False,
             "geo_bypass": True,
             "source_address": "0.0.0.0",
+            # Socket timeout to prevent hanging
+            "socket_timeout": 15,
+            # Disable retries - APIs have strict rate limits
+            "retries": 0,
+            "fragment_retries": 0,
+            "extractor_retries": 0,
+            "file_access_retries": 0,
         }
         
-        # Add cookies if available (bypasses YouTube bot detection)
-        cookies_path = _get_cookies_path()
+        # Add cookies if available (uses cached cookies only - no GSM call here)
+        cookies_path = _get_cookies_path_sync()
         if cookies_path:
             options["cookiefile"] = cookies_path
-            logger.info("YouTube cookies configured")
+            logger.info("YouTube cookies configured", path=cookies_path)
         else:
             logger.warning(
                 "No YouTube cookies found - may be blocked by YouTube bot detection. "
-                "See README for instructions on adding cookies.txt"
+                "See TODO.md for instructions on adding cookies."
             )
         
         return options
@@ -158,8 +207,9 @@ class YouTubeAudioClient:
         Returns:
             List of video info dictionaries
         """
+        options = self._ensure_initialized()
         search_opts = {
-            **self._options,
+            **options,
             "extract_flat": True,
             "playlistend": limit,
         }
@@ -172,7 +222,16 @@ class YouTubeAudioClient:
                 return []
         
         logger.info("Searching YouTube", query=query, limit=limit)
-        return await asyncio.get_event_loop().run_in_executor(None, _search)
+        
+        loop = asyncio.get_running_loop()
+        try:
+            return await asyncio.wait_for(
+                loop.run_in_executor(_ytdl_executor, _search),
+                timeout=YTDL_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            logger.error("YouTube search timed out", query=query)
+            return []
     
     async def get_audio_track(self, url_or_query: str) -> AudioTrack | None:
         """Extract audio track from a URL or search query.
@@ -183,24 +242,36 @@ class YouTubeAudioClient:
         Returns:
             AudioTrack if successful, None otherwise
         """
+        options = self._ensure_initialized()
+        
         def _extract() -> dict[str, Any] | None:
             try:
-                # If it's not a URL, search for it
-                if not url_or_query.startswith(("http://", "https://")):
-                    search_url = f"ytsearch1:{url_or_query}"
-                    info = self._ydl.extract_info(search_url, download=False)
-                    if info and "entries" in info and info["entries"]:
-                        info = info["entries"][0]
-                else:
-                    info = self._ydl.extract_info(url_or_query, download=False)
-                
-                return info
+                with yt_dlp.YoutubeDL(options) as ydl:
+                    # If it's not a URL, search for it
+                    if not url_or_query.startswith(("http://", "https://")):
+                        search_url = f"ytsearch1:{url_or_query}"
+                        info = ydl.extract_info(search_url, download=False)
+                        if info and "entries" in info and info["entries"]:
+                            info = info["entries"][0]
+                    else:
+                        info = ydl.extract_info(url_or_query, download=False)
+                    
+                    return info
             except Exception as e:
                 logger.error("Failed to extract audio", url=url_or_query, error=str(e))
                 return None
         
         logger.info("Extracting audio", url=url_or_query)
-        info = await asyncio.get_event_loop().run_in_executor(None, _extract)
+        
+        loop = asyncio.get_running_loop()
+        try:
+            info = await asyncio.wait_for(
+                loop.run_in_executor(_ytdl_executor, _extract),
+                timeout=YTDL_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            logger.error("Audio extraction timed out", url=url_or_query)
+            return None
         
         if not info:
             return None
@@ -247,8 +318,9 @@ class YouTubeAudioClient:
         Returns:
             List of track info dictionaries
         """
+        options = self._ensure_initialized()
         playlist_opts = {
-            **self._options,
+            **options,
             "extract_flat": True,
             "playlistend": limit,
             "noplaylist": False,
@@ -269,7 +341,16 @@ class YouTubeAudioClient:
                 return []
         
         logger.info("Extracting playlist", url=playlist_url, limit=limit)
-        return await asyncio.get_event_loop().run_in_executor(None, _extract)
+        
+        loop = asyncio.get_running_loop()
+        try:
+            return await asyncio.wait_for(
+                loop.run_in_executor(_ytdl_executor, _extract),
+                timeout=YTDL_TIMEOUT * 2,  # Longer timeout for playlists
+            )
+        except asyncio.TimeoutError:
+            logger.error("Playlist extraction timed out", url=playlist_url)
+            return []
     
     def is_youtube_url(self, url: str) -> bool:
         """Check if a URL is a YouTube URL.
