@@ -138,6 +138,63 @@ If you need to update them:
 
 ---
 
+## 🎬 YouTube Cookies Setup (Optional)
+
+YouTube blocks requests from cloud servers (bot detection). To enable music playback, you need to provide YouTube cookies from a logged-in browser session.
+
+### Step 1: Export cookies from your browser
+
+**Chrome:**
+1. Install [Get cookies.txt LOCALLY](https://chrome.google.com/webstore/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc)
+2. Log into YouTube in Chrome
+3. Go to youtube.com
+4. Click the extension → "Export"
+5. Save as `cookies.txt`
+
+**Firefox:**
+1. Install [cookies.txt](https://addons.mozilla.org/en-US/firefox/addon/cookies-txt/)
+2. Same steps as Chrome
+
+### Step 2: Upload cookies to Secret Manager
+
+```bash
+# Create the secret
+gcloud secrets create youtube-cookies \
+  --data-file=cookies.txt \
+  --project=mr-swede
+
+# Grant access to the service account
+gcloud secrets add-iam-policy-binding youtube-cookies \
+  --member="serviceAccount:mr-swede-sa@mr-swede.iam.gserviceaccount.com" \
+  --role="roles/secretmanager.secretAccessor" \
+  --project=mr-swede
+```
+
+### Step 3: Restart Cloud Run
+
+```bash
+gcloud run services update mr-swede --region=us-east4 \
+  --update-env-vars="RESTART=$(date +%s)"
+```
+
+### Updating cookies
+
+When cookies expire (usually every few weeks), re-export and update:
+
+```bash
+gcloud secrets versions add youtube-cookies \
+  --data-file=cookies.txt \
+  --project=mr-swede
+```
+
+### ⚠️ Notes
+
+- Cookies expire periodically - you'll need to re-export them
+- This is in a gray area with YouTube's Terms of Service
+- Without cookies, `/play` will show an error about bot detection
+
+---
+
 ## 🗄️ Firestore Database Setup
 
 ### Create Firestore Database

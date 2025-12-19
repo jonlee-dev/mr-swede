@@ -107,10 +107,14 @@ class OverfastClient(BaseAPIClient):
         try:
             summary = await self.get_player_summary(battle_tag)
             
+            logger.debug("Player summary response", battle_tag=battle_tag, summary_keys=list(summary.keys()))
+            
             competitive = summary.get("competitive", {})
             if not competitive:
                 logger.warning("No competitive data found", battle_tag=battle_tag)
                 return CompetitiveStats()
+            
+            logger.debug("Competitive data", battle_tag=battle_tag, competitive=competitive)
             
             # Handle both 'pc' and 'console' keys
             pc_data = competitive.get("pc", {})
@@ -118,19 +122,27 @@ class OverfastClient(BaseAPIClient):
                 # Try to get from season data directly (API structure varies)
                 pc_data = competitive.get("season", {})
             
+            logger.debug("PC data", battle_tag=battle_tag, pc_data=pc_data)
+            
             # Parse rank data for each role
-            def parse_rank(role_data: dict[str, Any] | None) -> RankInfo:
+            def parse_rank(role_data: Any) -> RankInfo:
                 if not role_data:
+                    return RankInfo()
+                # Handle case where role_data might not be a dict
+                if not isinstance(role_data, dict):
+                    logger.warning("Unexpected role data type", 
+                                   role_data_type=type(role_data).__name__, 
+                                   role_data=role_data)
                     return RankInfo()
                 return RankInfo(
                     division=role_data.get("division", ""),
-                    tier=role_data.get("tier", 0),
+                    tier=role_data.get("tier", 0) if isinstance(role_data.get("tier"), int) else 0,
                     skill_rating=role_data.get("skill_rating"),
                 )
             
             # Get season info if available
             season = None
-            if "season" in pc_data:
+            if "season" in pc_data and isinstance(pc_data.get("season"), dict):
                 season_data = pc_data.get("season", {})
                 tank_data = season_data.get("tank")
                 damage_data = season_data.get("damage")
@@ -139,6 +151,8 @@ class OverfastClient(BaseAPIClient):
                 tank_data = pc_data.get("tank")
                 damage_data = pc_data.get("damage")
                 support_data = pc_data.get("support")
+            
+            logger.debug("Role data", tank=tank_data, damage=damage_data, support=support_data)
             
             stats = CompetitiveStats(
                 tank=parse_rank(tank_data),

@@ -65,6 +65,7 @@ Thumbs.db
 # Secrets & local config
 secrets/
 *.local
+cookies.txt
 
 # Build artifacts
 *.spec

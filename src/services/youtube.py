@@ -5,7 +5,10 @@ This is used for Discord voice channel playback.
 """
 
 import asyncio
+import os
+import tempfile
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import yt_dlp
@@ -13,6 +16,72 @@ import yt_dlp
 from src.config.logging import get_logger
 
 logger = get_logger(__name__)
+
+# Path to cookies file (for bypassing YouTube bot detection)
+COOKIES_FILE = Path("/app/cookies.txt")
+COOKIES_FILE_LOCAL = Path("cookies.txt")
+COOKIES_TEMP_FILE = Path("/tmp/youtube_cookies.txt")
+
+# Secret Manager path for cookies
+YOUTUBE_COOKIES_SECRET = "projects/749144818572/secrets/youtube-cookies/versions/latest"
+
+
+def _fetch_cookies_from_gsm() -> str | None:
+    """Fetch YouTube cookies from Google Secret Manager.
+    
+    Returns:
+        Path to temporary cookies file, or None if not available
+    """
+    # Check if we already have the temp file
+    if COOKIES_TEMP_FILE.exists() and COOKIES_TEMP_FILE.stat().st_size > 0:
+        logger.debug("Using cached cookies from temp file")
+        return str(COOKIES_TEMP_FILE)
+    
+    # Check for custom secret path via env var
+    secret_path = os.environ.get("YOUTUBE_COOKIES_SECRET_PATH", YOUTUBE_COOKIES_SECRET)
+    
+    try:
+        from google.cloud import secretmanager
+        
+        client = secretmanager.SecretManagerServiceClient()
+        response = client.access_secret_version(request={"name": secret_path})
+        cookies_content = response.payload.data.decode("UTF-8")
+        
+        # Write to temp file
+        COOKIES_TEMP_FILE.write_text(cookies_content)
+        logger.info("Loaded YouTube cookies from Secret Manager")
+        
+        return str(COOKIES_TEMP_FILE)
+        
+    except ImportError:
+        logger.debug("google-cloud-secret-manager not installed")
+        return None
+    except Exception as e:
+        # This is expected if the secret doesn't exist
+        logger.debug("Could not fetch YouTube cookies from GSM", error=str(e))
+        return None
+
+
+def _get_cookies_path() -> str | None:
+    """Get the path to the cookies file if available.
+    
+    Checks in order:
+    1. Secret Manager (youtube-cookies secret)
+    2. Local file at /app/cookies.txt (Docker)
+    3. Local file at ./cookies.txt (development)
+    """
+    # Try Secret Manager first
+    gsm_path = _fetch_cookies_from_gsm()
+    if gsm_path:
+        return gsm_path
+    
+    # Fall back to local files
+    for path in [COOKIES_FILE, COOKIES_FILE_LOCAL]:
+        if path.exists() and path.stat().st_size > 0:
+            logger.info("Using YouTube cookies from file", path=str(path))
+            return str(path)
+    
+    return None
 
 
 @dataclass
@@ -40,20 +109,6 @@ class AudioTrack:
 class YouTubeAudioClient:
     """Client for extracting audio from YouTube videos."""
     
-    # yt-dlp options for audio extraction
-    YDL_OPTIONS = {
-        "format": "bestaudio/best",
-        "noplaylist": True,
-        "quiet": True,
-        "no_warnings": True,
-        "extract_flat": False,
-        "nocheckcertificate": True,
-        "ignoreerrors": False,
-        "logtostderr": False,
-        "geo_bypass": True,
-        "source_address": "0.0.0.0",
-    }
-    
     # FFmpeg options for Discord playback
     FFMPEG_OPTIONS = {
         "before_options": "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
@@ -62,7 +117,36 @@ class YouTubeAudioClient:
     
     def __init__(self) -> None:
         """Initialize the YouTube audio client."""
-        self._ydl = yt_dlp.YoutubeDL(self.YDL_OPTIONS)
+        self._options = self._build_options()
+        self._ydl = yt_dlp.YoutubeDL(self._options)
+    
+    def _build_options(self) -> dict[str, Any]:
+        """Build yt-dlp options, including cookies if available."""
+        options = {
+            "format": "bestaudio/best",
+            "noplaylist": True,
+            "quiet": True,
+            "no_warnings": True,
+            "extract_flat": False,
+            "nocheckcertificate": True,
+            "ignoreerrors": False,
+            "logtostderr": False,
+            "geo_bypass": True,
+            "source_address": "0.0.0.0",
+        }
+        
+        # Add cookies if available (bypasses YouTube bot detection)
+        cookies_path = _get_cookies_path()
+        if cookies_path:
+            options["cookiefile"] = cookies_path
+            logger.info("YouTube cookies configured")
+        else:
+            logger.warning(
+                "No YouTube cookies found - may be blocked by YouTube bot detection. "
+                "See README for instructions on adding cookies.txt"
+            )
+        
+        return options
     
     async def search(self, query: str, limit: int = 5) -> list[dict[str, Any]]:
         """Search YouTube for videos.
@@ -75,7 +159,7 @@ class YouTubeAudioClient:
             List of video info dictionaries
         """
         search_opts = {
-            **self.YDL_OPTIONS,
+            **self._options,
             "extract_flat": True,
             "playlistend": limit,
         }
@@ -164,7 +248,7 @@ class YouTubeAudioClient:
             List of track info dictionaries
         """
         playlist_opts = {
-            **self.YDL_OPTIONS,
+            **self._options,
             "extract_flat": True,
             "playlistend": limit,
             "noplaylist": False,

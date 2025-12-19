@@ -469,3 +469,6 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 - **[TODO.md](./TODO.md)** — Complete setup guide with GCP permissions, API setup, and deployment instructions
 - **[CHANGELOG.md](./CHANGELOG.md)** — Version history and release notes
+
+### Note:
+Smol Server ID: 635551370761601062
