@@ -1,211 +1,305 @@
 # 🇸🇪 Mr. Swede
 
-A Swiss-army-knife Discord bot for Overwatch stats tracking and music playback, deployed on Google Cloud Run.
+[![CI](https://github.com/jonlee-dev/mr-swede/actions/workflows/ci.yaml/badge.svg)](https://github.com/jonlee-dev/mr-swede/actions/workflows/ci.yaml)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
+[![Discord.py](https://img.shields.io/badge/discord.py-2.3+-blue.svg)](https://discordpy.readthedocs.io/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-## Features
+A Swiss-army-knife Discord bot for Overwatch stats tracking and music playback, designed for serverless deployment on Google Cloud Run.
+
+---
+
+## ✨ Features
 
 ### 🎮 Overwatch Stats Tracking
-- Track multiple accounts (including alts)
-- View competitive ranks for all roles (Tank, Damage, Support)
-- Historical stats tracking with Firestore
-- Server leaderboard
-- Uses [Overfast API](https://overfast-api.tekrop.fr/) for reliable data
+- **Multi-account support** — Track your main and all your alt accounts
+- **Competitive rank tracking** — View ranks for Tank, Damage, and Support roles
+- **Historical stats** — Track your progress over time with Firestore
+- **Server leaderboard** — See who's climbing the ranks
+- Powered by [Overfast API](https://overfast-api.tekrop.fr/) for reliable data
 
 ### 🎵 Music Playback
-- Play music from YouTube URLs or search queries
-- Spotify URL support (searches YouTube for playback)
-- Queue management (add, skip, shuffle, loop)
-- Volume control
-- Auto-disconnect when inactive
+- **YouTube & Spotify** — Play from URLs or search queries
+- **Queue management** — Add, skip, shuffle, and loop tracks
+- **Volume control** — Fine-tune your listening experience
+- **Auto-disconnect** — Saves resources when inactive
 
-### 🔧 General
-- Modern slash commands
-- Health check endpoint for Cloud Run
-- Structured logging with JSON output
-- Google Secret Manager integration
+### ☁️ Cloud-Native Design
+- **Serverless** — Runs on Cloud Run, scales to zero when idle
+- **Secure secrets** — Credentials managed by Google Secret Manager
+- **Persistent storage** — Firestore for account data and stats history
+- **Health checks** — Built-in `/health` endpoint for monitoring
 
-## Quick Start
+---
+
+## 🚀 Quick Start
 
 ### Prerequisites
+
 - Python 3.11+
 - [Poetry](https://python-poetry.org/) for dependency management
 - FFmpeg for audio playback
-- A Discord bot token
+- A Discord bot token ([setup guide](./TODO.md#-discord-developer-portal-setup))
 
-### Local Development
+### Installation
 
 ```bash
+# Clone the repository
+git clone https://github.com/jonlee-dev/mr-swede.git
+cd mr-swede
+
+# Install Poetry (if needed)
+curl -sSL https://install.python-poetry.org | python3 -
+
 # Install dependencies
 poetry install
 
-# Copy environment file
+# Configure environment
 cp env.example .env
-# Edit .env with your credentials
+# Edit .env with your credentials (see TODO.md for details)
+```
 
-# Run the bot
-poetry run python -m src.main --standalone
+### Running Locally
+
+```bash
+# Activate virtual environment
+poetry shell
+
+# Run the bot (standalone mode, no HTTP server)
+python -m src.main --standalone
+
+# Or run with HTTP health check server (like Cloud Run)
+python -m src.main
 ```
 
 ### Running Tests
 
 ```bash
-# All tests
+# All tests with coverage
 poetry run pytest
 
-# Unit tests only
+# Unit tests only (fast)
 poetry run pytest tests/unit -v
 
-# With coverage
+# Acceptance tests (ATDD)
+poetry run pytest tests/acceptance -v
+
+# Generate HTML coverage report
 poetry run pytest --cov=src --cov-report=html
+open htmlcov/index.html
 ```
 
-## Commands
+---
 
-### Overwatch
+## 📖 Commands
+
+### Overwatch Commands
+
 | Command | Description |
 |---------|-------------|
-| `/ow stats <battletag>` | View player stats |
+| `/ow stats <battletag>` | View player competitive stats |
 | `/ow track <battletag>` | Start tracking an account |
 | `/ow untrack <battletag>` | Stop tracking an account |
 | `/ow list` | List your tracked accounts |
-| `/ow refresh` | Refresh all your stats |
-| `/ow leaderboard` | Server ranking leaderboard |
+| `/ow refresh` | Refresh stats for all your accounts |
+| `/ow leaderboard` | Show server ranking leaderboard |
 
-### Music
+### Music Commands
+
 | Command | Description |
 |---------|-------------|
 | `/play <query>` | Play a song or add to queue |
 | `/pause` | Pause playback |
 | `/resume` | Resume playback |
-| `/skip` | Skip current track |
-| `/stop` | Stop and clear queue |
-| `/queue` | Show the queue |
-| `/volume <0-100>` | Set volume |
-| `/loop <off/single/queue>` | Set loop mode |
+| `/skip` | Skip to next track |
+| `/stop` | Stop and clear the queue |
+| `/queue` | Show current queue |
+| `/nowplaying` | Show current track info |
+| `/volume <0-100>` | Set playback volume |
+| `/loop <off\|single\|queue>` | Set loop mode |
 | `/shuffle` | Shuffle the queue |
-| `/leave` | Disconnect from voice |
-| `/nowplaying` | Show current track |
+| `/leave` | Disconnect from voice channel |
 
-### General
+### General Commands
+
 | Command | Description |
 |---------|-------------|
 | `/ping` | Check bot latency |
-| `/help` | Show help |
-| `/info` | Bot information |
+| `/help [category]` | Show help information |
+| `/info` | Display bot information |
+| `/invite` | Get bot invite link |
 
-## Architecture
+---
+
+## 🏗️ Architecture
 
 ```
 mr-swede/
 ├── src/
-│   ├── main.py           # Entry point with FastAPI health check
-│   ├── bot.py            # Discord bot setup
-│   ├── config/           # Settings & logging
-│   ├── cogs/             # Discord command modules
-│   │   ├── general.py    # Utility commands
-│   │   ├── overwatch.py  # OW stats commands
-│   │   └── music.py      # Music commands
-│   ├── services/         # External API clients
-│   │   ├── overfast.py   # Overfast API
-│   │   ├── blizzard.py   # Blizzard API
-│   │   ├── spotify.py    # Spotify API
-│   │   └── youtube.py    # yt-dlp wrapper
-│   ├── database/         # Firestore integration
-│   └── utils/            # Helper functions
+│   ├── main.py              # Entry point with FastAPI health check
+│   ├── bot.py               # Discord bot setup and configuration
+│   ├── config/
+│   │   ├── settings.py      # Pydantic settings with GSM integration
+│   │   └── logging.py       # Structured logging with structlog
+│   ├── cogs/
+│   │   ├── general.py       # Utility commands (/ping, /help, etc.)
+│   │   ├── overwatch.py     # Overwatch tracking commands
+│   │   └── music.py         # Music playback commands
+│   ├── services/
+│   │   ├── base.py          # Base HTTP client with OAuth support
+│   │   ├── overfast.py      # Overfast API client
+│   │   ├── blizzard.py      # Blizzard Battle.net API client
+│   │   ├── spotify.py       # Spotify API client
+│   │   └── youtube.py       # yt-dlp audio extraction
+│   ├── database/
+│   │   ├── models.py        # Pydantic models for Firestore
+│   │   └── firestore.py     # Async Firestore client
+│   └── utils/
+│       └── helpers.py       # Utility functions
 ├── tests/
-│   ├── unit/             # Unit tests
-│   ├── integration/      # Integration tests
-│   └── acceptance/       # ATDD tests (pytest-bdd)
-├── Dockerfile            # Container image
-├── cloudbuild.yaml       # Cloud Build config
-└── pyproject.toml        # Poetry config
+│   ├── unit/                # Fast unit tests
+│   ├── integration/         # API integration tests
+│   └── acceptance/          # ATDD with pytest-bdd (Gherkin features)
+├── Dockerfile               # Multi-stage build for Cloud Run
+├── cloudbuild.yaml          # GCP Cloud Build CI/CD pipeline
+├── pyproject.toml           # Poetry configuration
+├── TODO.md                  # Setup guide & manual tasks
+└── CHANGELOG.md             # Release notes
 ```
 
-## Deployment
+---
 
-### Google Cloud Run
+## ☁️ Deployment
 
-The bot is designed for Cloud Run deployment with:
-- HTTP health check endpoint (`/health`)
-- Automatic scaling (min 1 instance for voice features)
-- Google Secret Manager for credentials
-- Firestore for data persistence
+### Cloud Run (Recommended)
 
-See [TODO.md](./TODO.md) for detailed setup instructions.
-
-### Quick Deploy
+The bot is optimized for Google Cloud Run with:
+- HTTP health check endpoint for container lifecycle
+- Automatic scaling (configurable min/max instances)
+- Google Secret Manager for secure credential storage
+- Firestore for persistent data
 
 ```bash
-# First time setup - see TODO.md for prerequisites
+# First-time setup: follow TODO.md for prerequisites
 
-# Deploy with Cloud Build
+# Deploy using Cloud Build
 gcloud builds submit --config=cloudbuild.yaml
 ```
 
-## Configuration
+> **Note:** For voice features to work reliably, set `min-instances=1` in Cloud Run configuration. This incurs a baseline cost but ensures the bot can maintain voice connections.
+
+### GitHub Actions
+
+The repository includes a CI workflow (`.github/workflows/ci.yaml`) that:
+1. Runs linting (Ruff) and type checking (MyPy)
+2. Executes unit and acceptance tests
+3. Builds Docker image on main branch pushes
+
+---
+
+## ⚙️ Configuration
 
 ### Environment Variables
 
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `DISCORD_TOKEN` | Discord bot token | Required |
-| `DISCORD_GUILD_ID` | Guild for fast command sync | Optional |
-| `GCP_PROJECT_ID` | GCP project ID | Auto-detected |
-| `USE_GSM` | Use Google Secret Manager | `true` |
-| `BLIZZARD_CLIENT_ID` | Blizzard API client ID | Required for deck features |
-| `SPOTIFY_CLIENT_ID` | Spotify API client ID | Required for Spotify URLs |
-| `LOG_LEVEL` | Logging level | `INFO` |
-| `LOG_FORMAT` | Log format (console/json) | `json` |
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `DISCORD_TOKEN` | ✅ | Discord bot token |
+| `DISCORD_GUILD_ID` | ❌ | Guild ID for fast command sync (dev) |
+| `GCP_PROJECT_ID` | ❌ | GCP project (auto-detected on Cloud Run) |
+| `USE_GSM` | ❌ | Use Secret Manager for secrets (default: `true`) |
+| `BLIZZARD_CLIENT_ID` | ❌ | For Blizzard API features |
+| `BLIZZARD_CLIENT_SECRET` | ❌ | For Blizzard API features |
+| `SPOTIFY_CLIENT_ID` | ❌ | For Spotify URL support |
+| `SPOTIFY_CLIENT_SECRET` | ❌ | For Spotify URL support |
+| `LOG_LEVEL` | ❌ | Logging level (default: `INFO`) |
+| `LOG_FORMAT` | ❌ | `console` or `json` (default: `json`) |
 
-### Secrets in Google Secret Manager
+### Google Secret Manager
 
+When `USE_GSM=true`, the bot loads secrets from GSM with these names:
 - `discord-token`
 - `blizzard-client-id`
 - `blizzard-client-secret`
 - `spotify-client-id`
 - `spotify-client-secret`
 
-## Development
+---
+
+## 🧪 Development
 
 ### Code Quality
 
 ```bash
-# Lint
+# Lint with Ruff
 poetry run ruff check src tests
 
-# Format
+# Format with Ruff
 poetry run ruff format src tests
 
-# Type check
+# Type check with MyPy
 poetry run mypy src
+
+# Run all quality checks
+poetry run pre-commit run --all-files
+```
+
+### Pre-commit Hooks
+
+Install pre-commit hooks to automatically check code quality:
+
+```bash
+poetry run pre-commit install
 ```
 
 ### Test-Driven Development
 
-The project uses ATDD with pytest-bdd. Feature files are in `tests/acceptance/features/`:
-- `overwatch.feature` - Overwatch command scenarios
-- `music.feature` - Music command scenarios
+The project follows ATDD (Acceptance Test-Driven Development):
 
-## Tech Stack
+1. **Feature files** in `tests/acceptance/features/` define behavior in Gherkin
+2. **Step definitions** in `tests/acceptance/` implement the scenarios
+3. **Unit tests** in `tests/unit/` test individual components
 
-- **Runtime**: Python 3.11
-- **Discord**: discord.py 2.x with slash commands
-- **Web Framework**: FastAPI (for health checks)
-- **Database**: Google Firestore
-- **Secrets**: Google Secret Manager
-- **Audio**: yt-dlp + FFmpeg
-- **Testing**: pytest + pytest-bdd + pytest-asyncio
-- **CI/CD**: GitHub Actions + Cloud Build
+---
 
-## License
+## 🛠️ Tech Stack
 
-MIT
+| Category | Technology |
+|----------|------------|
+| **Runtime** | Python 3.11 |
+| **Discord** | discord.py 2.x with slash commands |
+| **Web Framework** | FastAPI (health checks) |
+| **Database** | Google Cloud Firestore |
+| **Secrets** | Google Secret Manager |
+| **Audio** | yt-dlp + FFmpeg |
+| **Config** | Pydantic Settings |
+| **Logging** | structlog (JSON) |
+| **Testing** | pytest, pytest-bdd, pytest-asyncio |
+| **Linting** | Ruff, MyPy |
+| **CI/CD** | GitHub Actions, Cloud Build |
+| **Container** | Docker, Cloud Run |
 
-## Contributing
+---
+
+## 📄 License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+---
+
+## 🤝 Contributing
 
 1. Fork the repository
-2. Create a feature branch
-3. Write tests (TDD!)
+2. Create a feature branch (`git checkout -b feature/amazing-feature`)
+3. Write tests first (TDD!)
 4. Make your changes
-5. Run `poetry run pytest` and `poetry run ruff check`
-6. Submit a pull request
+5. Run quality checks (`poetry run pytest && poetry run ruff check`)
+6. Commit your changes (`git commit -m 'Add amazing feature'`)
+7. Push to the branch (`git push origin feature/amazing-feature`)
+8. Open a Pull Request
+
+---
+
+## 📚 Documentation
+
+- **[TODO.md](./TODO.md)** — Complete setup guide with GCP permissions, API setup, and deployment instructions
+- **[CHANGELOG.md](./CHANGELOG.md)** — Version history and release notes

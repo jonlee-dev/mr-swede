@@ -26,6 +26,7 @@ venv/
 ENV/
 env/
 .env
+.env.*
 
 # IDE
 .idea/
@@ -53,8 +54,8 @@ dmypy.json
 # Ruff
 .ruff_cache/
 
-# Poetry
-poetry.lock
+# Poetry (lock file should be committed for reproducible builds)
+# poetry.lock
 
 # OS
 .DS_Store
@@ -62,21 +63,11 @@ Thumbs.db
 *.log
 
 # Secrets & local config
-.env
-.env.local
-*.local
 secrets/
+*.local
 
 # Build artifacts
 *.spec
-
-# Old project files (can be removed after migration)
-apis/
-utils/overwatch.py
-bot.py
-config/
-accounts.xlsx
-requirements.txt
 
 # Jupyter
 .ipynb_checkpoints/
