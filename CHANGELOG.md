@@ -5,6 +5,43 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.11] - 2024-12-19
+
+### ⚡ Two-Phase YouTube Search
+
+Implemented fast two-phase search to dramatically speed up song lookup.
+
+### The Problem
+
+Even with pre-initialized yt-dlp, `ytsearch1:query` with full extraction takes 20-30s because YouTube returns a lot of metadata. This was still causing timeouts.
+
+### The Fix
+
+**Two-phase search:**
+1. **Phase 1 (Fast)**: Flat search with `extract_flat=True` (~1-3s) - just get video URL
+2. **Phase 2 (Normal)**: Extract audio info from the specific URL (~3-5s)
+
+This is much faster because flat search only gets video IDs/URLs, not full metadata.
+
+### Performance Impact
+
+| Before | After |
+|--------|-------|
+| Single search: 20-30s | Phase 1: 1-3s + Phase 2: 3-5s |
+| Often times out | Total: ~5-8s |
+
+### New Log Messages
+
+```
+🔍 Phase 1: Flat search starting...
+✅ Phase 1: Got video URL (search_ms: 2000)
+🎬 Phase 2: Extracting audio info...
+✅ Phase 2: Extraction complete (extract_ms: 4000)
+✅ Two-phase search complete (total_ms: 6000)
+```
+
+---
+
 ## [2.1.10] - 2024-12-19
 
 ### 🚀 Pre-Initialize yt-dlp on Startup

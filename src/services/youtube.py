@@ -377,100 +377,115 @@ class YouTubeAudioClient:
         
         is_url = url_or_query.startswith(("http://", "https://"))
         
-        def _extract() -> dict[str, Any] | None:
-            global _ytdl_instance
-            extract_start = time.time()
+        def _flat_search(query: str) -> str | None:
+            """Phase 1: Fast flat search to get video URL only."""
+            global _ytdl_options
+            
+            # Use options with extract_flat for fast search
+            flat_opts = {
+                **(_ytdl_options or _build_ytdl_options()),
+                "extract_flat": True,  # Just get URL, no full extraction
+                "playlistend": 1,
+            }
             
             try:
-                # Use pre-initialized instance if available, otherwise create new one
-                if _ytdl_instance is not None:
-                    ydl = _ytdl_instance
-                    logger.info("🔧 Using pre-initialized yt-dlp instance")
-                else:
-                    # Fallback: initialize now (slow, but better than failing)
-                    logger.warning("⚠️ yt-dlp not pre-initialized, creating new instance (slow)")
-                    _init_ytdl_sync()
-                    ydl = _ytdl_instance
-                
-                # If it's not a URL, search YouTube
-                if not is_url:
-                    search_url = f"ytsearch1:{url_or_query}"
-                    logger.info(
-                        "🔍 YouTube SEARCH starting...",
-                        query=url_or_query,
-                    )
-                    
+                with yt_dlp.YoutubeDL(flat_opts) as ydl:
+                    logger.info("🔍 Phase 1: Flat search starting...", query=query)
                     search_start = time.time()
-                    info = ydl.extract_info(search_url, download=False)
+                    
+                    info = ydl.extract_info(f"ytsearch1:{query}", download=False)
+                    
                     search_elapsed = time.time() - search_start
                     
                     if not info:
-                        logger.warning(
-                            "🔍 YouTube SEARCH returned None",
-                            query=url_or_query,
-                            search_ms=round(search_elapsed * 1000),
-                        )
+                        logger.warning("🔍 Phase 1: Search returned None", query=query)
                         return None
                     
-                    # Handle search results
-                    if "entries" in info:
-                        entries = info.get("entries", [])
-                        entry_count = len(entries) if entries else 0
-                        logger.info(
-                            "🔍 YouTube SEARCH got results",
-                            entry_count=entry_count,
-                            search_ms=round(search_elapsed * 1000),
-                        )
-                        
-                        if not entries:
-                            logger.warning(
-                                "🔍 YouTube SEARCH empty entries",
-                                query=url_or_query,
-                            )
-                            return None
-                        
-                        info = entries[0]
-                        if not info:
-                            logger.warning(
-                                "🔍 YouTube SEARCH first entry is None",
-                                query=url_or_query,
-                            )
-                            return None
+                    entries = info.get("entries", [])
+                    if not entries:
+                        logger.warning("🔍 Phase 1: No results", query=query)
+                        return None
                     
-                    total_elapsed = time.time() - extract_start
+                    first = entries[0]
+                    if not first:
+                        logger.warning("🔍 Phase 1: First entry is None", query=query)
+                        return None
+                    
+                    video_url = first.get("url") or first.get("webpage_url")
+                    video_id = first.get("id")
+                    
+                    # If we got a video ID but no URL, construct it
+                    if not video_url and video_id:
+                        video_url = f"https://www.youtube.com/watch?v={video_id}"
+                    
                     logger.info(
-                        "✅ YouTube SEARCH complete",
-                        query=url_or_query,
-                        title=info.get("title"),
-                        video_id=info.get("id"),
-                        duration=info.get("duration"),
+                        "✅ Phase 1: Got video URL",
+                        query=query,
+                        video_id=video_id,
+                        title=first.get("title"),
                         search_ms=round(search_elapsed * 1000),
-                        total_ms=round(total_elapsed * 1000),
-                        has_url="url" in info,
-                        format_count=len(info.get("formats", [])),
                     )
+                    
+                    return video_url
+            except Exception as e:
+                logger.error("❌ Phase 1: Search failed", query=query, error=str(e)[:200])
+                return None
+        
+        def _extract_url(url: str) -> dict[str, Any] | None:
+            """Phase 2: Extract audio info from URL."""
+            global _ytdl_instance
+            
+            try:
+                # Use pre-initialized instance if available
+                if _ytdl_instance is not None:
+                    ydl = _ytdl_instance
                 else:
-                    logger.info(
-                        "🎬 YouTube EXTRACT starting...",
-                        url=url_or_query[:80],
-                    )
-                    
-                    extract_api_start = time.time()
-                    info = ydl.extract_info(url_or_query, download=False)
-                    extract_elapsed = time.time() - extract_api_start
-                    
-                    total_elapsed = time.time() - extract_start
-                    logger.info(
-                        "✅ YouTube EXTRACT complete",
-                        title=info.get("title") if info else None,
-                        video_id=info.get("id") if info else None,
-                        extract_ms=round(extract_elapsed * 1000),
-                        total_ms=round(total_elapsed * 1000),
-                        has_url="url" in info if info else False,
-                        format_count=len(info.get("formats", [])) if info else 0,
-                    )
+                    logger.warning("⚠️ yt-dlp not pre-initialized, creating new instance")
+                    _init_ytdl_sync()
+                    ydl = _ytdl_instance
+                
+                logger.info("🎬 Phase 2: Extracting audio info...", url=url[:60])
+                extract_start = time.time()
+                
+                info = ydl.extract_info(url, download=False)
+                
+                extract_elapsed = time.time() - extract_start
+                logger.info(
+                    "✅ Phase 2: Extraction complete",
+                    title=info.get("title") if info else None,
+                    extract_ms=round(extract_elapsed * 1000),
+                    has_url="url" in info if info else False,
+                    format_count=len(info.get("formats", [])) if info else 0,
+                )
                 
                 return info
+            except Exception as e:
+                logger.error("❌ Phase 2: Extraction failed", url=url[:60], error=str(e)[:200])
+                return None
+        
+        def _extract() -> dict[str, Any] | None:
+            extract_start = time.time()
+            
+            try:
+                if not is_url:
+                    # Two-phase search: flat search first, then extract
+                    video_url = _flat_search(url_or_query)
+                    if not video_url:
+                        return None
+                    
+                    # Now extract from the URL
+                    info = _extract_url(video_url)
+                    
+                    total_elapsed = time.time() - extract_start
+                    logger.info(
+                        "✅ Two-phase search complete",
+                        query=url_or_query,
+                        total_ms=round(total_elapsed * 1000),
+                    )
+                    return info
+                else:
+                    # Direct URL extraction
+                    return _extract_url(url_or_query)
             except Exception as e:
                 elapsed = time.time() - extract_start
                 error_str = str(e)
@@ -488,17 +503,9 @@ class YouTubeAudioClient:
                         url=url_or_query[:80],
                         elapsed_ms=round(elapsed * 1000),
                     )
-                elif "No video formats" in error_str or "Unable to extract" in error_str:
-                    logger.error(
-                        "❌ YouTube format extraction FAILED",
-                        url=url_or_query[:80],
-                        error=error_str[:200],
-                        elapsed_ms=round(elapsed * 1000),
-                        hint="Video may be age-restricted or geo-blocked",
-                    )
                 else:
                     logger.error(
-                        "❌ YouTube extraction FAILED",
+                        "❌ Extraction failed",
                         url=url_or_query[:80],
                         error=error_str[:200],
                         elapsed_ms=round(elapsed * 1000),
