@@ -1,14 +1,14 @@
-"""YouTube audio client for music playback.
+"""Audio client for music playback.
 
-Uses yt-dlp to extract audio streams from YouTube videos.
+Uses yt-dlp to extract audio streams from YouTube and SoundCloud.
 This is used for Discord voice channel playback.
 """
 
 import asyncio
 import os
+import time
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
-from functools import partial
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -27,11 +27,15 @@ COOKIES_TEMP_FILE = Path("/tmp/youtube_cookies.txt")
 YOUTUBE_COOKIES_SECRET = "projects/mr-swede/secrets/youtube-cookie/versions/latest"
 
 # Dedicated thread pool for yt-dlp operations (prevents blocking main event loop)
-_ytdl_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="ytdl")
+_ytdl_executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="ytdl")
 
 # Timeout for yt-dlp operations (seconds)
 # Cloud Run cold starts + YouTube extraction can be slow
 YTDL_TIMEOUT = 60
+
+# Audio URL cache (URLs expire after ~6 hours, we cache for 4 hours)
+_audio_url_cache: dict[str, tuple["AudioTrack", float]] = {}
+AUDIO_URL_CACHE_TTL = 4 * 60 * 60  # 4 hours in seconds
 
 
 def _fetch_cookies_from_gsm_sync() -> str | None:
@@ -166,7 +170,8 @@ class YouTubeAudioClient:
     def _build_options(self) -> dict[str, Any]:
         """Build yt-dlp options, including cookies if available."""
         options = {
-            "format": "bestaudio/best",
+            # Prefer opus/webm audio (Discord native, faster)
+            "format": "bestaudio[acodec=opus]/bestaudio[acodec=vorbis]/bestaudio/best",
             "noplaylist": True,
             "quiet": True,
             "no_warnings": True,
@@ -177,12 +182,17 @@ class YouTubeAudioClient:
             "geo_bypass": True,
             "source_address": "0.0.0.0",
             # Socket timeout to prevent hanging
-            "socket_timeout": 15,
+            "socket_timeout": 10,
             # Disable retries - APIs have strict rate limits
             "retries": 0,
             "fragment_retries": 0,
             "extractor_retries": 0,
             "file_access_retries": 0,
+            # Skip unnecessary processing
+            "skip_download": True,
+            "no_check_formats": True,  # Skip format availability check (faster)
+            "youtube_include_dash_manifest": False,  # Skip DASH (we don't need it)
+            "youtube_include_hls_manifest": False,   # Skip HLS (we don't need it)
         }
         
         # Add cookies if available (uses cached cookies only - no GSM call here)
@@ -234,15 +244,66 @@ class YouTubeAudioClient:
             logger.error("YouTube search timed out", query=query)
             return []
     
-    async def get_audio_track(self, url_or_query: str) -> AudioTrack | None:
+    def _get_cache_key(self, url_or_query: str) -> str:
+        """Generate a cache key for a URL or query."""
+        # Normalize YouTube URLs to video ID for better cache hits
+        if "youtube.com" in url_or_query or "youtu.be" in url_or_query:
+            import re
+            # Extract video ID
+            patterns = [
+                r'(?:v=|/)([a-zA-Z0-9_-]{11})(?:[&?]|$)',
+                r'youtu\.be/([a-zA-Z0-9_-]{11})',
+            ]
+            for pattern in patterns:
+                match = re.search(pattern, url_or_query)
+                if match:
+                    return f"yt:{match.group(1)}"
+        return url_or_query.lower().strip()
+    
+    def _get_cached_track(self, url_or_query: str) -> AudioTrack | None:
+        """Get a track from cache if still valid."""
+        cache_key = self._get_cache_key(url_or_query)
+        if cache_key in _audio_url_cache:
+            track, timestamp = _audio_url_cache[cache_key]
+            if time.time() - timestamp < AUDIO_URL_CACHE_TTL:
+                logger.debug("Cache hit for audio track", key=cache_key)
+                return track
+            else:
+                del _audio_url_cache[cache_key]
+        return None
+    
+    def _cache_track(self, url_or_query: str, track: AudioTrack) -> None:
+        """Cache an audio track."""
+        cache_key = self._get_cache_key(url_or_query)
+        _audio_url_cache[cache_key] = (track, time.time())
+        
+        # Also cache by webpage_url if different
+        if track.webpage_url and track.webpage_url != url_or_query:
+            webpage_key = self._get_cache_key(track.webpage_url)
+            _audio_url_cache[webpage_key] = (track, time.time())
+        
+        logger.debug("Cached audio track", key=cache_key, title=track.title)
+    
+    async def get_audio_track(
+        self, 
+        url_or_query: str, 
+        use_cache: bool = True,
+    ) -> AudioTrack | None:
         """Extract audio track from a URL or search query.
         
         Args:
             url_or_query: YouTube URL or search query
+            use_cache: Whether to use cached results (default: True)
             
         Returns:
             AudioTrack if successful, None otherwise
         """
+        # Check cache first
+        if use_cache:
+            cached = self._get_cached_track(url_or_query)
+            if cached:
+                return cached
+        
         options = self._ensure_initialized()
         
         def _extract() -> dict[str, Any] | None:
@@ -307,10 +368,13 @@ class YouTubeAudioClient:
             formats = info.get("formats", [])
             audio_formats = [f for f in formats if f.get("acodec") != "none"]
             if audio_formats:
-                # Prefer opus or webm
-                for fmt in audio_formats:
-                    if fmt.get("acodec") == "opus":
-                        audio_url = fmt.get("url")
+                # Prefer opus (Discord native) > vorbis > others
+                for codec in ["opus", "vorbis"]:
+                    for fmt in audio_formats:
+                        if fmt.get("acodec") == codec:
+                            audio_url = fmt.get("url")
+                            break
+                    if audio_url:
                         break
                 if not audio_url:
                     audio_url = audio_formats[-1].get("url")
@@ -319,7 +383,7 @@ class YouTubeAudioClient:
             logger.error("No audio URL found", title=info.get("title"))
             return None
         
-        return AudioTrack(
+        track = AudioTrack(
             url=audio_url,
             title=info.get("title", "Unknown"),
             duration=info.get("duration", 0),
@@ -327,6 +391,161 @@ class YouTubeAudioClient:
             webpage_url=info.get("webpage_url", url_or_query),
             uploader=info.get("uploader", "Unknown"),
         )
+        
+        # Cache the track for future requests
+        self._cache_track(url_or_query, track)
+        
+        return track
+    
+    async def search_soundcloud(self, query: str) -> AudioTrack | None:
+        """Search SoundCloud for a track.
+        
+        Args:
+            query: Search query
+            
+        Returns:
+            AudioTrack if found, None otherwise
+        """
+        # Check cache first
+        cache_key = f"sc:{query.lower().strip()}"
+        if cache_key in _audio_url_cache:
+            track, timestamp = _audio_url_cache[cache_key]
+            if time.time() - timestamp < AUDIO_URL_CACHE_TTL:
+                logger.debug("SoundCloud cache hit", query=query)
+                return track
+        
+        options = self._ensure_initialized()
+        # SoundCloud-specific options (no cookies needed)
+        sc_options = {
+            **options,
+            "cookiefile": None,  # SoundCloud doesn't need YouTube cookies
+        }
+        
+        def _search_sc() -> dict[str, Any] | None:
+            try:
+                with yt_dlp.YoutubeDL(sc_options) as ydl:
+                    search_url = f"scsearch1:{query}"
+                    logger.debug("Searching SoundCloud", search_url=search_url)
+                    info = ydl.extract_info(search_url, download=False)
+                    
+                    if not info:
+                        return None
+                    
+                    if "entries" in info:
+                        entries = info["entries"]
+                        if not entries:
+                            return None
+                        info = entries[0]
+                        if not info:
+                            return None
+                    
+                    return info
+            except Exception as e:
+                logger.debug("SoundCloud search failed", query=query, error=str(e))
+                return None
+        
+        logger.info("Searching SoundCloud", query=query)
+        
+        loop = asyncio.get_running_loop()
+        try:
+            info = await asyncio.wait_for(
+                loop.run_in_executor(_ytdl_executor, _search_sc),
+                timeout=30,  # Shorter timeout for SoundCloud
+            )
+        except asyncio.TimeoutError:
+            logger.debug("SoundCloud search timed out", query=query)
+            return None
+        
+        if not info:
+            return None
+        
+        # Get audio URL
+        audio_url = info.get("url")
+        if not audio_url:
+            formats = info.get("formats", [])
+            if formats:
+                audio_url = formats[-1].get("url")
+        
+        if not audio_url:
+            return None
+        
+        track = AudioTrack(
+            url=audio_url,
+            title=info.get("title", "Unknown"),
+            duration=info.get("duration", 0),
+            thumbnail=info.get("thumbnail"),
+            webpage_url=info.get("webpage_url", ""),
+            uploader=info.get("uploader", "Unknown"),
+        )
+        
+        # Cache the track
+        _audio_url_cache[cache_key] = (track, time.time())
+        logger.info("Found on SoundCloud", title=track.title)
+        
+        return track
+    
+    async def get_audio_track_multi_source(
+        self, 
+        query: str,
+        try_soundcloud_first: bool = True,
+    ) -> tuple[AudioTrack | None, str]:
+        """Try to get audio from multiple sources.
+        
+        Args:
+            query: Search query (not a URL)
+            try_soundcloud_first: Whether to try SoundCloud before YouTube
+            
+        Returns:
+            Tuple of (AudioTrack or None, source name)
+        """
+        # If it's a URL, determine the source and fetch directly
+        if query.startswith(("http://", "https://")):
+            if "soundcloud.com" in query:
+                track = await self.get_audio_track(query)
+                return track, "soundcloud" if track else "none"
+            else:
+                track = await self.get_audio_track(query)
+                return track, "youtube" if track else "none"
+        
+        # For search queries, try multiple sources
+        if try_soundcloud_first:
+            # Try SoundCloud first (faster, no cookies needed)
+            track = await self.search_soundcloud(query)
+            if track:
+                return track, "soundcloud"
+            
+            # Fall back to YouTube
+            track = await self.get_audio_track(query)
+            return track, "youtube" if track else "none"
+        else:
+            # Try YouTube first
+            track = await self.get_audio_track(query)
+            if track:
+                return track, "youtube"
+            
+            # Fall back to SoundCloud
+            track = await self.search_soundcloud(query)
+            return track, "soundcloud" if track else "none"
+    
+    async def prefetch_track(self, url_or_query: str) -> None:
+        """Pre-fetch a track in the background (for queue pre-loading).
+        
+        This method doesn't return anything - it just ensures the track
+        is cached for when it's actually needed.
+        
+        Args:
+            url_or_query: YouTube URL or search query
+        """
+        # Skip if already cached
+        if self._get_cached_track(url_or_query):
+            return
+        
+        # Fetch in background (fire and forget)
+        try:
+            await self.get_audio_track(url_or_query)
+            logger.debug("Pre-fetched track", query=url_or_query)
+        except Exception as e:
+            logger.debug("Pre-fetch failed (non-critical)", query=url_or_query, error=str(e))
     
     async def get_playlist_tracks(
         self, 

@@ -22,6 +22,16 @@ This release fixes the "websocket is Xs behind" error that caused Discord connec
 - **yt-dlp execution model** — All YouTube operations now use a dedicated `ThreadPoolExecutor` with 2 workers
 - **Timeouts** — Added 60-second timeout for audio extraction (increased from 30s), 120-second timeout for playlist extraction
 - **Timeout error handling** — `/play` now shows a helpful message when extraction times out instead of generic error
+- **SoundCloud support** — `/play` now searches SoundCloud first, then falls back to YouTube (faster, no cookies needed)
+- **Multi-source search** — `get_audio_track_multi_source()` tries multiple platforms for best results
+- **Audio URL caching** — Extracted audio URLs cached for 4 hours to avoid re-extraction
+- **Track pre-fetching** — Next track in queue is pre-fetched while current track plays
+- **Optimized yt-dlp settings** — Prefer opus/vorbis codecs, skip DASH/HLS manifests, reduced socket timeout
+
+### Fixed
+
+- **Bot crashing on playback errors** — Added comprehensive error handling in `_play_track` and `_play_next` to prevent crashes
+- **Voice client disconnection crashes** — Now gracefully handles disconnected voice clients
 - **Socket timeout** — Added 15-second socket timeout to yt-dlp options to prevent hanging
 - **Lazy initialization** — `YouTubeAudioClient` now lazily initializes options to avoid blocking on import
 
