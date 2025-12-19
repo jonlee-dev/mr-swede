@@ -20,7 +20,8 @@ This release fixes the "websocket is Xs behind" error that caused Discord connec
 ### Changed
 
 - **yt-dlp execution model** — All YouTube operations now use a dedicated `ThreadPoolExecutor` with 2 workers
-- **Timeouts** — Added 30-second timeout for audio extraction, 60-second timeout for playlist extraction
+- **Timeouts** — Added 60-second timeout for audio extraction (increased from 30s), 120-second timeout for playlist extraction
+- **Timeout error handling** — `/play` now shows a helpful message when extraction times out instead of generic error
 - **Socket timeout** — Added 15-second socket timeout to yt-dlp options to prevent hanging
 - **Lazy initialization** — `YouTubeAudioClient` now lazily initializes options to avoid blocking on import
 
@@ -31,6 +32,7 @@ This release fixes the "websocket is Xs behind" error that caused Discord connec
 - **Cookies caching** — Cookies fetched once and cached to `/tmp/youtube_cookies.txt`
 - **Overwatch stats caching** — In-memory cache (5 min TTL) to reduce Overfast API calls and avoid rate limits
 - **Better error messages** — `/ow stats` now shows specific errors for rate limiting (429), player not found (404), and other API errors
+- **Global app command error handler** — Gracefully handles "Unknown interaction" (10062) errors when Discord interactions expire
 
 ### Changed (API Rate Limiting)
 

@@ -1,6 +1,7 @@
 """Discord bot setup and configuration."""
 
 import discord
+from discord import app_commands
 from discord.ext import commands
 
 from src.config.logging import get_logger, setup_logging
@@ -33,34 +34,6 @@ class MrSwede(commands.Bot):
         self.settings = settings
         self.secrets = secrets
     
-    async def setup_hook(self) -> None:
-        """Called before the bot starts, used for async setup."""
-        # Load cogs
-        cog_modules = [
-            "src.cogs.general",
-            "src.cogs.overwatch",
-            "src.cogs.music",
-        ]
-        
-        for cog in cog_modules:
-            try:
-                await self.load_extension(cog)
-                logger.info("Loaded cog", cog=cog)
-            except Exception as e:
-                logger.error("Failed to load cog", cog=cog, error=str(e))
-        
-        # Sync slash commands
-        if self.settings.discord_guild_id:
-            # Sync to specific guild for faster updates during development
-            guild = discord.Object(id=int(self.settings.discord_guild_id))
-            self.tree.copy_global_to(guild=guild)
-            await self.tree.sync(guild=guild)
-            logger.info("Synced commands to guild", guild_id=self.settings.discord_guild_id)
-        else:
-            # Sync globally (takes up to an hour to propagate)
-            await self.tree.sync()
-            logger.info("Synced commands globally")
-    
     async def on_ready(self) -> None:
         """Called when the bot is ready."""
         if self.user:
@@ -91,6 +64,81 @@ class MrSwede(commands.Bot):
     async def on_error(self, event_method: str, *args, **kwargs) -> None:
         """Handle errors in event handlers."""
         logger.exception("Error in event", event=event_method)
+    
+    async def setup_hook(self) -> None:
+        """Called before the bot starts, used for async setup."""
+        # Set up global error handler for app commands
+        self.tree.on_error = self._on_app_command_error
+        
+        # Load cogs
+        await self._load_cogs()
+        
+        # Sync slash commands
+        await self._sync_commands()
+    
+    async def _on_app_command_error(
+        self, 
+        interaction: discord.Interaction, 
+        error: app_commands.AppCommandError,
+    ) -> None:
+        """Handle errors in app commands."""
+        # Unwrap the error if it's wrapped
+        original = error.original if isinstance(error, app_commands.CommandInvokeError) else error
+        
+        # Handle "Unknown interaction" errors (interaction expired)
+        if isinstance(original, discord.NotFound) and original.code == 10062:
+            logger.warning(
+                "Interaction expired",
+                command=interaction.command.name if interaction.command else "unknown",
+                user=str(interaction.user),
+            )
+            return  # Can't respond to expired interaction
+        
+        # Log other errors
+        logger.error(
+            "App command error",
+            command=interaction.command.name if interaction.command else "unknown",
+            user=str(interaction.user),
+            error=str(original),
+        )
+        
+        # Try to respond to the user
+        try:
+            message = "An error occurred while processing your command."
+            if interaction.response.is_done():
+                await interaction.followup.send(f"❌ {message}", ephemeral=True)
+            else:
+                await interaction.response.send_message(f"❌ {message}", ephemeral=True)
+        except discord.NotFound:
+            pass  # Interaction already expired
+    
+    async def _load_cogs(self) -> None:
+        """Load all cog modules."""
+        cog_modules = [
+            "src.cogs.general",
+            "src.cogs.overwatch",
+            "src.cogs.music",
+        ]
+        
+        for cog in cog_modules:
+            try:
+                await self.load_extension(cog)
+                logger.info("Loaded cog", cog=cog)
+            except Exception as e:
+                logger.error("Failed to load cog", cog=cog, error=str(e))
+    
+    async def _sync_commands(self) -> None:
+        """Sync slash commands with Discord."""
+        if self.settings.discord_guild_id:
+            # Sync to specific guild for faster updates during development
+            guild = discord.Object(id=int(self.settings.discord_guild_id))
+            self.tree.copy_global_to(guild=guild)
+            await self.tree.sync(guild=guild)
+            logger.info("Synced commands to guild", guild_id=self.settings.discord_guild_id)
+        else:
+            # Sync globally (takes up to an hour to propagate)
+            await self.tree.sync()
+            logger.info("Synced commands globally")
 
 
 def create_bot() -> MrSwede:

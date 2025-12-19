@@ -30,7 +30,8 @@ YOUTUBE_COOKIES_SECRET = "projects/mr-swede/secrets/youtube-cookie/versions/late
 _ytdl_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="ytdl")
 
 # Timeout for yt-dlp operations (seconds)
-YTDL_TIMEOUT = 30
+# Cloud Run cold starts + YouTube extraction can be slow
+YTDL_TIMEOUT = 60
 
 
 def _fetch_cookies_from_gsm_sync() -> str | None:
@@ -250,15 +251,38 @@ class YouTubeAudioClient:
                     # If it's not a URL, search for it
                     if not url_or_query.startswith(("http://", "https://")):
                         search_url = f"ytsearch1:{url_or_query}"
+                        logger.debug("Searching YouTube", search_url=search_url)
                         info = ydl.extract_info(search_url, download=False)
-                        if info and "entries" in info and info["entries"]:
-                            info = info["entries"][0]
+                        
+                        if not info:
+                            logger.warning("Search returned no results", query=url_or_query)
+                            return None
+                        
+                        if "entries" in info:
+                            entries = info["entries"]
+                            if not entries:
+                                logger.warning("Search returned empty entries", query=url_or_query)
+                                return None
+                            info = entries[0]
+                            if not info:
+                                logger.warning("First search entry is None", query=url_or_query)
+                                return None
+                        
+                        logger.debug("Search found", title=info.get("title"))
                     else:
                         info = ydl.extract_info(url_or_query, download=False)
                     
                     return info
             except Exception as e:
-                logger.error("Failed to extract audio", url=url_or_query, error=str(e))
+                error_str = str(e)
+                # Detect common YouTube errors
+                if "Sign in" in error_str or "bot" in error_str.lower():
+                    logger.error("YouTube auth error (cookies may be needed/expired)", 
+                                url=url_or_query, error=error_str)
+                elif "Video unavailable" in error_str:
+                    logger.warning("Video unavailable", url=url_or_query)
+                else:
+                    logger.error("Failed to extract audio", url=url_or_query, error=error_str)
                 return None
         
         logger.info("Extracting audio", url=url_or_query)

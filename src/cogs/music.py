@@ -185,15 +185,22 @@ class MusicCog(commands.Cog, name="Music"):
             interaction: Discord interaction
             query: Search query or URL
         """
+        # Defer FIRST to avoid "Unknown interaction" timeout errors
+        # Discord only gives 3 seconds to respond
+        try:
+            await interaction.response.defer()
+        except discord.NotFound:
+            # Interaction already expired (cold start or lag)
+            logger.warning("Interaction expired before defer", query=query)
+            return
+        
         # Check if user is in a voice channel
         if not interaction.user.voice or not interaction.user.voice.channel:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "❌ You must be in a voice channel to use this command.",
                 ephemeral=True,
             )
             return
-        
-        await interaction.response.defer()
         
         voice_channel = interaction.user.voice.channel
         guild = interaction.guild
@@ -226,11 +233,31 @@ class MusicCog(commands.Cog, name="Music"):
             track = await self.youtube.get_audio_track(query)
             
             if not track:
-                embed = discord.Embed(
-                    title="❌ Not Found",
-                    description="Could not find a playable track.",
-                    color=discord.Color.red(),
-                )
+                is_url = query.startswith(("http://", "https://"))
+                if is_url:
+                    embed = discord.Embed(
+                        title="❌ Could Not Load",
+                        description=(
+                            f"Failed to load: `{query[:50]}{'...' if len(query) > 50 else ''}`\n\n"
+                            "Possible reasons:\n"
+                            "• Video is private or age-restricted\n"
+                            "• YouTube cookies expired\n"
+                            "• Video not available in this region"
+                        ),
+                        color=discord.Color.red(),
+                    )
+                else:
+                    embed = discord.Embed(
+                        title="❌ No Results",
+                        description=(
+                            f"No results found for: `{query}`\n\n"
+                            "This could be due to:\n"
+                            "• YouTube cookies expired (search requires auth)\n"
+                            "• No matching videos found\n"
+                            "• Try a different search term"
+                        ),
+                        color=discord.Color.red(),
+                    )
                 await interaction.followup.send(embed=embed)
                 return
             
@@ -269,6 +296,21 @@ class MusicCog(commands.Cog, name="Music"):
                 await interaction.followup.send(embed=embed)
             
             logger.info("Playing track", title=track.title, user=str(interaction.user))
+            
+        except asyncio.TimeoutError:
+            logger.error("Audio extraction timed out", query=query)
+            embed = discord.Embed(
+                title="⏱️ Extraction Timed Out",
+                description=(
+                    "YouTube took too long to respond. This can happen due to:\n"
+                    "• Slow network connection\n"
+                    "• YouTube rate limiting\n"
+                    "• Expired cookies\n\n"
+                    "Please try again in a moment."
+                ),
+                color=discord.Color.orange(),
+            )
+            await interaction.followup.send(embed=embed)
             
         except Exception as e:
             error_str = str(e)
