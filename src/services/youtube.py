@@ -18,6 +18,16 @@ from src.config.logging import get_logger
 
 logger = get_logger(__name__)
 
+
+def get_ffmpeg_executor() -> ThreadPoolExecutor:
+    """Get the FFmpeg thread pool executor for non-blocking audio operations."""
+    return _ffmpeg_executor
+
+
+def get_ytdl_executor() -> ThreadPoolExecutor:
+    """Get the yt-dlp thread pool executor for non-blocking extraction."""
+    return _ytdl_executor
+
 # Path to cookies file (for bypassing YouTube bot detection)
 COOKIES_FILE = Path("/app/cookies.txt")
 COOKIES_FILE_LOCAL = Path("cookies.txt")
@@ -26,8 +36,11 @@ COOKIES_TEMP_FILE = Path("/tmp/youtube_cookies.txt")
 # Secret Manager path for cookies
 YOUTUBE_COOKIES_SECRET = "projects/mr-swede/secrets/youtube-cookie/versions/latest"
 
-# Dedicated thread pool for yt-dlp operations (prevents blocking main event loop)
-_ytdl_executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="ytdl")
+# Dedicated thread pools to prevent blocking the main event loop
+# yt-dlp: CPU-bound extraction, can be slow
+_ytdl_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="ytdl")
+# FFmpeg: audio processing/conversion
+_ffmpeg_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="ffmpeg")
 
 # Timeout for yt-dlp operations (seconds)
 # Cloud Run cold starts + YouTube extraction can be slow
@@ -396,136 +409,6 @@ class YouTubeAudioClient:
         self._cache_track(url_or_query, track)
         
         return track
-    
-    async def search_soundcloud(self, query: str) -> AudioTrack | None:
-        """Search SoundCloud for a track.
-        
-        Args:
-            query: Search query
-            
-        Returns:
-            AudioTrack if found, None otherwise
-        """
-        # Check cache first
-        cache_key = f"sc:{query.lower().strip()}"
-        if cache_key in _audio_url_cache:
-            track, timestamp = _audio_url_cache[cache_key]
-            if time.time() - timestamp < AUDIO_URL_CACHE_TTL:
-                logger.debug("SoundCloud cache hit", query=query)
-                return track
-        
-        options = self._ensure_initialized()
-        # SoundCloud-specific options (no cookies needed)
-        sc_options = {
-            **options,
-            "cookiefile": None,  # SoundCloud doesn't need YouTube cookies
-        }
-        
-        def _search_sc() -> dict[str, Any] | None:
-            try:
-                with yt_dlp.YoutubeDL(sc_options) as ydl:
-                    search_url = f"scsearch1:{query}"
-                    logger.debug("Searching SoundCloud", search_url=search_url)
-                    info = ydl.extract_info(search_url, download=False)
-                    
-                    if not info:
-                        return None
-                    
-                    if "entries" in info:
-                        entries = info["entries"]
-                        if not entries:
-                            return None
-                        info = entries[0]
-                        if not info:
-                            return None
-                    
-                    return info
-            except Exception as e:
-                logger.debug("SoundCloud search failed", query=query, error=str(e))
-                return None
-        
-        logger.info("Searching SoundCloud", query=query)
-        
-        loop = asyncio.get_running_loop()
-        try:
-            info = await asyncio.wait_for(
-                loop.run_in_executor(_ytdl_executor, _search_sc),
-                timeout=30,  # Shorter timeout for SoundCloud
-            )
-        except asyncio.TimeoutError:
-            logger.debug("SoundCloud search timed out", query=query)
-            return None
-        
-        if not info:
-            return None
-        
-        # Get audio URL
-        audio_url = info.get("url")
-        if not audio_url:
-            formats = info.get("formats", [])
-            if formats:
-                audio_url = formats[-1].get("url")
-        
-        if not audio_url:
-            return None
-        
-        track = AudioTrack(
-            url=audio_url,
-            title=info.get("title", "Unknown"),
-            duration=info.get("duration", 0),
-            thumbnail=info.get("thumbnail"),
-            webpage_url=info.get("webpage_url", ""),
-            uploader=info.get("uploader", "Unknown"),
-        )
-        
-        # Cache the track
-        _audio_url_cache[cache_key] = (track, time.time())
-        logger.info("Found on SoundCloud", title=track.title)
-        
-        return track
-    
-    async def get_audio_track_multi_source(
-        self, 
-        query: str,
-        try_soundcloud_first: bool = True,
-    ) -> tuple[AudioTrack | None, str]:
-        """Try to get audio from multiple sources.
-        
-        Args:
-            query: Search query (not a URL)
-            try_soundcloud_first: Whether to try SoundCloud before YouTube
-            
-        Returns:
-            Tuple of (AudioTrack or None, source name)
-        """
-        # If it's a URL, determine the source and fetch directly
-        if query.startswith(("http://", "https://")):
-            if "soundcloud.com" in query:
-                track = await self.get_audio_track(query)
-                return track, "soundcloud" if track else "none"
-            else:
-                track = await self.get_audio_track(query)
-                return track, "youtube" if track else "none"
-        
-        # For search queries, try multiple sources
-        if try_soundcloud_first:
-            # Try SoundCloud first (faster, no cookies needed)
-            track = await self.search_soundcloud(query)
-            if track:
-                return track, "soundcloud"
-            
-            # Fall back to YouTube
-            track = await self.get_audio_track(query)
-            return track, "youtube" if track else "none"
-        else:
-            # Try YouTube first
-            track = await self.get_audio_track(query)
-            if track:
-                return track, "youtube"
-            
-            # Fall back to SoundCloud
-            track = await self.search_soundcloud(query)
-            return track, "soundcloud" if track else "none"
     
     async def prefetch_track(self, url_or_query: str) -> None:
         """Pre-fetch a track in the background (for queue pre-loading).

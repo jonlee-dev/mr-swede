@@ -11,7 +11,12 @@ from discord.ext import commands
 
 from src.config.logging import get_logger
 from src.services import YouTubeAudioClient, get_spotify_client, preload_cookies
-from src.services.youtube import AudioTrack, COOKIES_TEMP_FILE, _fetch_cookies_from_gsm_async
+from src.services.youtube import (
+    AudioTrack, 
+    COOKIES_TEMP_FILE, 
+    _fetch_cookies_from_gsm_async,
+    get_ffmpeg_executor,
+)
 
 logger = get_logger(__name__)
 
@@ -229,12 +234,11 @@ class MusicCog(commands.Cog, name="Music"):
                         await self._handle_spotify_playlist(interaction, item_id, voice_client)
                         return
             
-            # Get audio track (try SoundCloud first for searches, then YouTube)
+            # Get audio track from YouTube
             is_url = query.startswith(("http://", "https://"))
-            track, source = await self.youtube.get_audio_track_multi_source(
-                query, 
-                try_soundcloud_first=not is_url,  # Only try SC first for searches
-            )
+            logger.info("Play command processing", query=query, is_url=is_url)
+            
+            track = await self.youtube.get_audio_track(query)
             
             if not track:
                 if is_url:
@@ -254,9 +258,8 @@ class MusicCog(commands.Cog, name="Music"):
                         title="❌ No Results",
                         description=(
                             f"No results found for: `{query}`\n\n"
-                            "Searched: SoundCloud ➜ YouTube\n\n"
                             "This could be due to:\n"
-                            "• No matching songs found on either platform\n"
+                            "• No matching videos found\n"
                             "• YouTube cookies expired\n"
                             "• Try a different search term"
                         ),
@@ -265,23 +268,18 @@ class MusicCog(commands.Cog, name="Music"):
                 await interaction.followup.send(embed=embed)
                 return
             
-            # Show source indicator
-            source_emoji = "☁️" if source == "soundcloud" else "▶️"
-            
             queue = self.get_queue(guild.id)
-            source_name = "SoundCloud" if source == "soundcloud" else "YouTube"
             
             # If something is playing, add to queue
             if voice_client.is_playing() or voice_client.is_paused():
                 queue.add(track)
                 embed = discord.Embed(
-                    title=f"{source_emoji} Added to Queue",
+                    title="📋 Added to Queue",
                     description=f"**{track.title}**",
-                    color=discord.Color.orange() if source == "soundcloud" else discord.Color.blue(),
+                    color=discord.Color.blue(),
                 )
                 embed.add_field(name="Duration", value=track.duration_str, inline=True)
                 embed.add_field(name="Position", value=f"#{len(queue)}", inline=True)
-                embed.add_field(name="Source", value=source_name, inline=True)
                 
                 if track.thumbnail:
                     embed.set_thumbnail(url=track.thumbnail)
@@ -292,20 +290,19 @@ class MusicCog(commands.Cog, name="Music"):
                 await self._play_track(voice_client, track, queue)
                 
                 embed = discord.Embed(
-                    title=f"{source_emoji} Now Playing",
+                    title="🎵 Now Playing",
                     description=f"**{track.title}**",
-                    color=discord.Color.orange() if source == "soundcloud" else discord.Color.green(),
+                    color=discord.Color.green(),
                 )
                 embed.add_field(name="Duration", value=track.duration_str, inline=True)
                 embed.add_field(name="Requested by", value=interaction.user.mention, inline=True)
-                embed.add_field(name="Source", value=source_name, inline=True)
                 
                 if track.thumbnail:
                     embed.set_thumbnail(url=track.thumbnail)
                 
                 await interaction.followup.send(embed=embed)
             
-            logger.info("Playing track", title=track.title, source=source, user=str(interaction.user))
+            logger.info("Playing track", title=track.title, user=str(interaction.user))
             
         except asyncio.TimeoutError:
             logger.error("Audio extraction timed out", query=query)
@@ -362,32 +359,69 @@ class MusicCog(commands.Cog, name="Music"):
             
             queue.current = track
             
-            ffmpeg_opts = {
-                "before_options": "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
-                "options": "-vn",
-            }
+            # Optimized FFmpeg options for faster startup and lower latency
+            ffmpeg_before_opts = (
+                "-reconnect 1 "
+                "-reconnect_streamed 1 "
+                "-reconnect_delay_max 5 "
+                "-nostdin "                    # Don't wait for stdin
+                "-loglevel error "             # Only show errors
+                "-analyzeduration 0 "          # Don't analyze - start immediately
+                "-probesize 32768"             # Small probe size for faster start
+            )
+            # Audio output options - convert to PCM for Discord
+            ffmpeg_opts = (
+                "-vn "                         # No video
+                "-threads 2 "                  # Use 2 threads for decoding
+                "-af aresample=async=1"        # Async resampling for smoother playback
+            )
             
             try:
-                source = discord.FFmpegPCMAudio(track.url, **ffmpeg_opts)
+                # Create FFmpeg source in dedicated executor to avoid blocking event loop
+                # This is critical - FFmpegPCMAudio can block for several seconds during init
+                loop = asyncio.get_running_loop()
+                ffmpeg_executor = get_ffmpeg_executor()
+                
+                def _create_ffmpeg_source() -> discord.FFmpegPCMAudio:
+                    return discord.FFmpegPCMAudio(
+                        track.url,
+                        before_options=ffmpeg_before_opts,
+                        options=ffmpeg_opts,
+                    )
+                
+                source = await asyncio.wait_for(
+                    loop.run_in_executor(ffmpeg_executor, _create_ffmpeg_source),
+                    timeout=30.0,  # 30 second timeout for FFmpeg init
+                )
                 source = discord.PCMVolumeTransformer(source, volume=queue.volume)
+            except asyncio.TimeoutError:
+                logger.error("FFmpeg initialization timed out", title=track.title)
+                # Try to play next track instead of hanging
+                asyncio.create_task(self._play_next(voice_client, queue))
+                return
             except Exception as e:
                 logger.error("Failed to create audio source", error=str(e), title=track.title)
                 # Try to play next track instead of crashing
-                await self._play_next(voice_client, queue)
+                asyncio.create_task(self._play_next(voice_client, queue))
                 return
             
+            # Capture bot loop reference for thread-safe callback
+            bot_loop = self.bot.loop
+            
             def after_playing(error: Exception | None) -> None:
+                """Callback when track finishes - runs in FFmpeg thread."""
                 if error:
                     logger.error("Playback error", error=str(error))
                 
-                # Schedule next track (wrapped in try/except to prevent crashes)
+                # Schedule next track in the bot's event loop (thread-safe)
+                # Use call_soon_threadsafe for minimal latency
                 try:
-                    asyncio.run_coroutine_threadsafe(
-                        self._play_next(voice_client, queue),
-                        self.bot.loop,
+                    bot_loop.call_soon_threadsafe(
+                        lambda: asyncio.create_task(self._play_next(voice_client, queue))
                     )
-                except Exception as e:
-                    logger.error("Failed to schedule next track", error=str(e))
+                except RuntimeError:
+                    # Loop might be closed during shutdown
+                    logger.debug("Could not schedule next track - event loop may be closed")
             
             voice_client.play(source, after=after_playing)
             
@@ -467,7 +501,7 @@ class MusicCog(commands.Cog, name="Music"):
         playlist_id: str,
         voice_client: discord.VoiceClient,
     ) -> None:
-        """Handle Spotify playlist."""
+        """Handle Spotify playlist with parallel track fetching."""
         if not self.spotify:
             embed = discord.Embed(
                 title="❌ Spotify Not Configured",
@@ -493,13 +527,30 @@ class MusicCog(commands.Cog, name="Music"):
             return
             
         queue = self.get_queue(guild.id)
-        added = 0
         
-        for track in tracks:
-            search_query = f"{' '.join(track['artists'][:2])} {track['name']}"
-            audio_track = await self.youtube.get_audio_track(search_query)
-            if audio_track:
-                queue.add(audio_track)
+        # Fetch tracks in parallel batches for faster loading
+        # Use semaphore to limit concurrent requests (avoid rate limiting)
+        sem = asyncio.Semaphore(3)  # Max 3 concurrent YouTube searches
+        
+        async def fetch_track(track_info: dict) -> AudioTrack | None:
+            async with sem:
+                search_query = f"{' '.join(track_info['artists'][:2])} {track_info['name']}"
+                try:
+                    return await self.youtube.get_audio_track(search_query)
+                except Exception:
+                    return None
+        
+        # Fetch all tracks concurrently
+        results = await asyncio.gather(
+            *[fetch_track(track) for track in tracks],
+            return_exceptions=True,
+        )
+        
+        # Add successful tracks to queue
+        added = 0
+        for result in results:
+            if isinstance(result, AudioTrack):
+                queue.add(result)
                 added += 1
         
         # Start playing if not already
@@ -510,7 +561,7 @@ class MusicCog(commands.Cog, name="Music"):
         
         embed = discord.Embed(
             title="📋 Playlist Added",
-            description=f"Added **{added}** tracks to the queue.",
+            description=f"Added **{added}** of {len(tracks)} tracks to the queue.",
             color=discord.Color.green(),
         )
         await interaction.followup.send(embed=embed)

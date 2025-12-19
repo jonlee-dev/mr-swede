@@ -28,6 +28,8 @@ class Settings(BaseSettings):
     
     # GCP Settings
     gcp_project_id: str = Field(default="749144818572", alias="GCP_PROJECT_ID")
+    # Firestore uses project name, not number
+    firestore_project: str = Field(default="mr-swede", alias="FIRESTORE_PROJECT")
     
     # Discord bot selection (which bot from discord-bot-secrets to use)
     discord_bot_name: str = Field(

@@ -5,6 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.2] - 2024-12-19
+
+### 🧵 Improved Async & Non-Blocking Threading
+
+This release improves bot responsiveness during music playback by better isolating blocking operations.
+
+### Changed
+
+- **Dedicated FFmpeg executor** — FFmpegPCMAudio now runs in its own thread pool (2 workers) instead of sharing the default executor
+- **Increased yt-dlp workers** — Thread pool increased from 3 to 4 workers for better concurrency
+- **Parallel playlist loading** — Spotify playlists now fetch tracks concurrently (3 at a time via semaphore) instead of sequentially
+- **Thread-safe callbacks** — `after_playing` callback now uses `call_soon_threadsafe` for lower latency scheduling
+- **FFmpeg timeout** — Added 30-second timeout for FFmpeg initialization to prevent hangs
+
+### Fixed
+
+- **Bot unresponsive during music processing** — FFmpeg and yt-dlp operations fully isolated in dedicated thread pools
+- **Sequential playlist loading slow** — Playlist tracks now load ~3x faster with concurrent fetching
+- **Callback scheduling issues** — Improved thread safety in playback completion callback
+
+### Added
+
+- **`get_ffmpeg_executor()` function** — Access the FFmpeg thread pool for custom audio processing
+- **`get_ytdl_executor()` function** — Access the yt-dlp thread pool for custom extraction
+
+---
+
 ## [2.1.1] - 2024-12-19
 
 ### 🎵 Music Playback Performance Fix
@@ -22,16 +49,23 @@ This release fixes the "websocket is Xs behind" error that caused Discord connec
 - **yt-dlp execution model** — All YouTube operations now use a dedicated `ThreadPoolExecutor` with 2 workers
 - **Timeouts** — Added 60-second timeout for audio extraction (increased from 30s), 120-second timeout for playlist extraction
 - **Timeout error handling** — `/play` now shows a helpful message when extraction times out instead of generic error
-- **SoundCloud support** — `/play` now searches SoundCloud first, then falls back to YouTube (faster, no cookies needed)
-- **Multi-source search** — `get_audio_track_multi_source()` tries multiple platforms for best results
+- ~~**SoundCloud support**~~ — Removed (SoundCloud now requires OAuth API credentials)
 - **Audio URL caching** — Extracted audio URLs cached for 4 hours to avoid re-extraction
 - **Track pre-fetching** — Next track in queue is pre-fetched while current track plays
 - **Optimized yt-dlp settings** — Prefer opus/vorbis codecs, skip DASH/HLS manifests, reduced socket timeout
+- **Faster FFmpeg startup** — Added `-analyzeduration 0 -probesize 32768` for instant playback start
+- **Reduced FFmpeg latency** — Added `-nostdin -loglevel error -threads 2 -af aresample=async=1`
 
 ### Fixed
 
 - **Bot crashing on playback errors** — Added comprehensive error handling in `_play_track` and `_play_next` to prevent crashes
 - **Voice client disconnection crashes** — Now gracefully handles disconnected voice clients
+- **Bot shutting down on exceptions** — Added global asyncio exception handler to catch unhandled errors
+- **Auto-reconnect on disconnect** — Bot now automatically reconnects if connection is lost (30s retry delay)
+- **Multi-source search crashes** — All search operations now wrapped in try/except to prevent crashes
+- **Firestore 404 error** — Added separate `FIRESTORE_PROJECT` setting (defaults to `mr-swede`) for database connection
+- **Project ID vs Name** — Secrets use project number (`749144818572`), Firestore uses project name (`mr-swede`)
+- **FFmpeg blocking event loop** — Moved FFmpegPCMAudio creation to executor to prevent websocket lag
 - **Socket timeout** — Added 15-second socket timeout to yt-dlp options to prevent hanging
 - **Lazy initialization** — `YouTubeAudioClient` now lazily initializes options to avoid blocking on import
 

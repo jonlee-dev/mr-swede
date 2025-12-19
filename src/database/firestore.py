@@ -263,7 +263,7 @@ def get_firestore_client() -> FirestoreClient:
     """Get cached Firestore client instance."""
     settings = get_settings()
     return FirestoreClient(
-        project_id=settings.gcp_project_id or None,
+        project_id=settings.firestore_project or None,
         collection_prefix=settings.firestore_collection_prefix,
     )
 

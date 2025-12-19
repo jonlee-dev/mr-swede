@@ -19,6 +19,27 @@ from src.config.settings import get_settings
 logger = get_logger(__name__)
 
 
+def _handle_exception(loop: asyncio.AbstractEventLoop, context: dict) -> None:
+    """Global exception handler for asyncio tasks.
+    
+    This prevents unhandled exceptions in background tasks from crashing the bot.
+    """
+    exception = context.get("exception")
+    message = context.get("message", "Unknown error")
+    
+    if exception:
+        logger.error(
+            "Unhandled exception in async task",
+            error=str(exception),
+            error_type=type(exception).__name__,
+            message=message,
+        )
+    else:
+        logger.error("Async task error", message=message)
+    
+    # Don't crash - just log the error
+
+
 # Global state for health checks
 _bot = None
 _bot_task = None
@@ -35,6 +56,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     global _bot, _bot_task, _startup_error
     
     settings = get_settings()
+    
+    # Set global exception handler to prevent crashes from background tasks
+    loop = asyncio.get_running_loop()
+    loop.set_exception_handler(_handle_exception)
     
     logger.info(
         "Server starting...",
@@ -83,11 +108,22 @@ async def _start_bot_async(settings) -> None:
     logger.info("Connecting to Discord...")
     _bot = create_bot()
     
-    try:
-        await _bot.start(token)
-    except Exception as e:
-        _startup_error = str(e)
-        logger.error("Bot connection failed", error=str(e))
+    # Keep trying to stay connected
+    while True:
+        try:
+            await _bot.start(token)
+        except asyncio.CancelledError:
+            logger.info("Bot task cancelled")
+            break
+        except Exception as e:
+            _startup_error = str(e)
+            logger.error("Bot connection failed", error=str(e))
+            # Wait before reconnecting
+            logger.info("Waiting 30 seconds before reconnecting...")
+            await asyncio.sleep(30)
+            # Clear error state for reconnection attempt
+            _startup_error = None
+            logger.info("Attempting to reconnect...")
 
 
 # FastAPI app for Cloud Run health checks
