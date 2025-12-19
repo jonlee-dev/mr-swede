@@ -1,6 +1,6 @@
 """Firestore client for database operations."""
 
-from datetime import datetime
+from datetime import UTC, datetime
 from functools import lru_cache
 from typing import Any
 
@@ -118,7 +118,7 @@ class FirestoreClient:
             data: Fields to update
         """
         doc_ref = self.client.collection(self._collection("accounts")).document(account_id)
-        data["last_updated"] = datetime.utcnow()
+        data["last_updated"] = datetime.now(UTC)
         await doc_ref.update(data)
         logger.info("Updated account", doc_id=account_id)
     
@@ -133,7 +133,7 @@ class FirestoreClient:
         """
         await self.update_account(account_id, {
             "current_stats": stats.model_dump(),
-            "last_updated": datetime.utcnow(),
+            "last_updated": datetime.now(UTC),
         })
     
     async def delete_account(self, account_id: str) -> None:
@@ -251,7 +251,7 @@ class FirestoreClient:
             doc_ref = collection.document(account_id)
             batch.update(doc_ref, {
                 "current_stats": stats.model_dump(),
-                "last_updated": datetime.utcnow(),
+                "last_updated": datetime.now(UTC),
             })
         
         await batch.commit()

@@ -62,6 +62,12 @@ markers = [
     "acceptance: Acceptance tests (ATDD)",
     "slow: Slow running tests",
 ]
+filterwarnings = [
+    # Ignore audioop deprecation from discord.py (will be fixed in discord.py 3.x)
+    "ignore:'audioop' is deprecated:DeprecationWarning",
+    # Ignore pytest-bdd internal usefixtures warning
+    "ignore:usefixtures\\(\\) .* without arguments has no effect:pytest.PytestWarning",
+]
 
 [tool.ruff]
 line-length = 100

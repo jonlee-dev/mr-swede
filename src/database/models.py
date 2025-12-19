@@ -1,10 +1,15 @@
 """Data models for Firestore documents."""
 
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import Enum
 from typing import Any
 
 from pydantic import BaseModel, Field
+
+
+def _utc_now() -> datetime:
+    """Get current UTC time (timezone-aware)."""
+    return datetime.now(UTC)
 
 
 class OverwatchRole(str, Enum):
@@ -67,7 +72,7 @@ class Account(BaseModel):
     region: str = "us"  # us, eu, asia
     current_stats: CompetitiveStats = Field(default_factory=CompetitiveStats)
     last_updated: datetime | None = None
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=_utc_now)
     
     def to_firestore(self) -> dict[str, Any]:
         """Convert to Firestore-compatible dict."""
@@ -91,7 +96,7 @@ class StatsHistory(BaseModel):
     account_id: str  # Reference to Account
     battle_tag: str
     stats: CompetitiveStats
-    recorded_at: datetime = Field(default_factory=datetime.utcnow)
+    recorded_at: datetime = Field(default_factory=_utc_now)
     season: int | None = None
     
     def to_firestore(self) -> dict[str, Any]:
@@ -129,14 +134,14 @@ class UserPreferences(BaseModel):
     notification_enabled: bool = True
     spotify_linked: bool = False
     spotify_refresh_token: str | None = None
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=_utc_now)
+    updated_at: datetime = Field(default_factory=_utc_now)
     
     def to_firestore(self) -> dict[str, Any]:
         """Convert to Firestore-compatible dict."""
         data = self.model_dump(exclude={"id", "spotify_refresh_token"})
         data["created_at"] = self.created_at
-        data["updated_at"] = datetime.utcnow()
+        data["updated_at"] = _utc_now()
         # Store sensitive data separately or encrypt
         return data
     
@@ -154,7 +159,7 @@ class MusicQueueItem(BaseModel):
     url: str
     duration: int = 0  # Duration in seconds
     requested_by: str  # Discord user ID
-    requested_at: datetime = Field(default_factory=datetime.utcnow)
+    requested_at: datetime = Field(default_factory=_utc_now)
     
     def to_firestore(self) -> dict[str, Any]:
         """Convert to Firestore-compatible dict."""
@@ -169,5 +174,5 @@ class GuildMusicState(BaseModel):
     is_playing: bool = False
     volume: float = 0.5
     loop_mode: str = "off"  # off, single, queue
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=_utc_now)
 

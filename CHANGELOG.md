@@ -33,6 +33,12 @@ This release introduces a robust secrets management system using Google Secret M
 - **Service initialization** — Blizzard and Spotify clients load credentials from `AppSecrets`
 - **Dockerfile** — Updated to Python 3.12 base image
 
+### Fixed
+
+- **datetime.utcnow() deprecation** — Replaced all `datetime.utcnow()` calls with timezone-aware `datetime.now(UTC)` for Python 3.12+ compatibility
+- **event_loop fixture deprecation** — Removed custom pytest event_loop fixture, using pytest-asyncio's built-in handling
+- **Test warnings** — Suppressed library warnings from discord.py (audioop) and pytest-bdd (usefixtures) in pyproject.toml
+
 ### Technical Details
 
 #### Secrets Architecture

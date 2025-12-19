@@ -1,7 +1,5 @@
 """Pytest configuration and fixtures."""
 
-import asyncio
-from typing import AsyncGenerator, Generator
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -10,16 +8,6 @@ from discord.ext import commands
 from src.config.secrets import AppSecrets, BlizzardSecrets, DiscordBotSecrets, SpotifySecrets
 from src.config.settings import Settings
 from src.database.models import Account, CompetitiveStats, RankInfo
-
-
-# ==================== Pytest Configuration ====================
-
-@pytest.fixture(scope="session")
-def event_loop() -> Generator[asyncio.AbstractEventLoop, None, None]:
-    """Create event loop for async tests."""
-    loop = asyncio.get_event_loop_policy().new_event_loop()
-    yield loop
-    loop.close()
 
 
 # ==================== Settings Fixtures ====================

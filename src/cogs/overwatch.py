@@ -1,6 +1,6 @@
 """Overwatch stats tracking commands."""
 
-from datetime import datetime
+from datetime import UTC, datetime
 
 import discord
 from discord import app_commands
@@ -116,7 +116,7 @@ class OverwatchCog(commands.Cog, name="Overwatch"):
                 display_name=name or battletag.split("#")[0],
                 is_main=main,
                 current_stats=stats,
-                last_updated=datetime.utcnow(),
+                last_updated=datetime.now(UTC),
             )
             
             account_id = await self.db.create_account(account)

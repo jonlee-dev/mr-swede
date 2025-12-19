@@ -1,7 +1,7 @@
 # 🇸🇪 Mr. Swede
 
 [![CI](https://github.com/jonlee-dev/mr-swede/actions/workflows/ci.yaml/badge.svg)](https://github.com/jonlee-dev/mr-swede/actions/workflows/ci.yaml)
-[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
+[![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
 [![Discord.py](https://img.shields.io/badge/discord.py-2.3+-blue.svg)](https://discordpy.readthedocs.io/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
@@ -36,7 +36,7 @@ A Swiss-army-knife Discord bot for Overwatch stats tracking and music playback, 
 
 ### Prerequisites
 
-- Python 3.11+
+- Python 3.12+
 - [Poetry](https://python-poetry.org/) for dependency management
 - FFmpeg for audio playback
 - A Discord bot token ([setup guide](./TODO.md#-discord-developer-portal-setup))
@@ -265,7 +265,7 @@ The project follows ATDD (Acceptance Test-Driven Development):
 
 | Category | Technology |
 |----------|------------|
-| **Runtime** | Python 3.11 |
+| **Runtime** | Python 3.12 |
 | **Discord** | discord.py 2.x with slash commands |
 | **Web Framework** | FastAPI (health checks) |
 | **Database** | Google Cloud Firestore |
