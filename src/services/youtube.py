@@ -184,19 +184,12 @@ class YouTubeAudioClient:
     def _build_options(self) -> dict[str, Any]:
         """Build yt-dlp options, including cookies if available."""
         # Discord voice uses 48kHz 64kbps opus - no point getting high quality
-        # Prefer lower quality for faster extraction and less bandwidth
+        # Use permissive format selection to avoid "format not available" errors
         options = {
-            # Prefer low-quality opus/webm (Discord native, fastest)
-            # worstaudio[acodec=opus] = smallest opus stream
-            # bestaudio[abr<=96] = any audio under 96kbps
-            # This dramatically speeds up extraction
-            "format": (
-                "worstaudio[acodec=opus]/"
-                "worstaudio[acodec=vorbis]/"
-                "bestaudio[abr<=96]/"
-                "worstaudio/"
-                "bestaudio"
-            ),
+            # bestaudio = best available audio-only format
+            # best = fallback to best video+audio if no audio-only available
+            # This is more reliable than restrictive format filters
+            "format": "bestaudio/best",
             "noplaylist": True,
             "quiet": True,
             "no_warnings": True,
