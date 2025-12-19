@@ -43,8 +43,9 @@ _ytdl_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="ytdl")
 _ffmpeg_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="ffmpeg")
 
 # Timeout for yt-dlp operations (seconds)
-# Cloud Run cold starts + YouTube extraction can be slow
-YTDL_TIMEOUT = 60
+# Keep this SHORT to avoid blocking Discord heartbeats (must respond within 10s)
+# If extraction takes longer, it's better to fail fast and retry
+YTDL_TIMEOUT = 30  # Reduced from 60s to prevent heartbeat blocking
 
 # Audio URL cache (URLs expire after ~6 hours, we cache for 4 hours)
 _audio_url_cache: dict[str, tuple["AudioTrack", float]] = {}
@@ -205,8 +206,10 @@ class YouTubeAudioClient:
             "logtostderr": False,
             "geo_bypass": True,
             "source_address": "0.0.0.0",
-            # Socket timeout to prevent hanging
-            "socket_timeout": 10,
+            # Socket timeout to prevent hanging - keep short for responsiveness
+            "socket_timeout": 8,
+            # HTTP chunk size for faster initial response
+            "http_chunk_size": 1048576,  # 1MB chunks
             # Disable retries - APIs have strict rate limits
             "retries": 0,
             "fragment_retries": 0,
@@ -347,6 +350,11 @@ class YouTubeAudioClient:
         if use_cache:
             cached = self._get_cached_track(url_or_query)
             if cached:
+                logger.info(
+                    "✅ get_audio_track CACHE HIT (instant)",
+                    title=cached.title,
+                    duration=cached.duration_str,
+                )
                 return cached
         
         options = self._ensure_initialized()
@@ -356,23 +364,45 @@ class YouTubeAudioClient:
         def _extract() -> dict[str, Any] | None:
             extract_start = time.time()
             try:
+                logger.info(
+                    "🔧 Creating yt-dlp instance",
+                    has_cookies=options.get("cookiefile") is not None,
+                    format=options.get("format", "default")[:50],
+                )
+                
                 with yt_dlp.YoutubeDL(options) as ydl:
+                    ydl_init_time = time.time() - extract_start
+                    logger.info("🔧 yt-dlp initialized", init_ms=round(ydl_init_time * 1000))
+                    
                     # If it's not a URL, search for it
                     if not is_url:
                         search_url = f"ytsearch1:{url_or_query}"
                         logger.info(
-                            "🔍 YouTube SEARCH start",
+                            "🔍 YouTube SEARCH starting...",
                             query=url_or_query,
                             search_url=search_url,
                         )
+                        
+                        search_start = time.time()
                         info = ydl.extract_info(search_url, download=False)
+                        search_elapsed = time.time() - search_start
                         
                         if not info:
-                            logger.warning("🔍 YouTube SEARCH returned no results", query=url_or_query)
+                            logger.warning(
+                                "🔍 YouTube SEARCH returned no results",
+                                query=url_or_query,
+                                search_ms=round(search_elapsed * 1000),
+                            )
                             return None
                         
                         if "entries" in info:
                             entries = info["entries"]
+                            entry_count = len(entries) if entries else 0
+                            logger.info(
+                                "🔍 YouTube SEARCH got entries",
+                                entry_count=entry_count,
+                                search_ms=round(search_elapsed * 1000),
+                            )
                             if not entries:
                                 logger.warning("🔍 YouTube SEARCH returned empty entries", query=url_or_query)
                                 return None
@@ -381,24 +411,37 @@ class YouTubeAudioClient:
                                 logger.warning("🔍 YouTube SEARCH first entry is None", query=url_or_query)
                                 return None
                         
-                        elapsed = time.time() - extract_start
+                        total_elapsed = time.time() - extract_start
                         logger.info(
-                            "🔍 YouTube SEARCH success",
+                            "✅ YouTube SEARCH complete",
                             query=url_or_query,
                             title=info.get("title"),
-                            elapsed_ms=round(elapsed * 1000),
+                            video_id=info.get("id"),
+                            duration=info.get("duration"),
+                            search_ms=round(search_elapsed * 1000),
+                            total_ms=round(total_elapsed * 1000),
+                            has_url="url" in info,
+                            format_count=len(info.get("formats", [])),
                         )
                     else:
                         logger.info(
-                            "🎬 YouTube EXTRACT start",
+                            "🎬 YouTube EXTRACT starting...",
                             url=url_or_query[:80],
                         )
+                        
+                        extract_api_start = time.time()
                         info = ydl.extract_info(url_or_query, download=False)
-                        elapsed = time.time() - extract_start
+                        extract_elapsed = time.time() - extract_api_start
+                        
+                        total_elapsed = time.time() - extract_start
                         logger.info(
-                            "🎬 YouTube EXTRACT success",
+                            "✅ YouTube EXTRACT complete",
                             title=info.get("title") if info else None,
-                            elapsed_ms=round(elapsed * 1000),
+                            video_id=info.get("id") if info else None,
+                            extract_ms=round(extract_elapsed * 1000),
+                            total_ms=round(total_elapsed * 1000),
+                            has_url="url" in info if info else False,
+                            format_count=len(info.get("formats", [])) if info else 0,
                         )
                     
                     return info
@@ -418,6 +461,14 @@ class YouTubeAudioClient:
                         "❌ Video unavailable",
                         url=url_or_query[:80],
                         elapsed_ms=round(elapsed * 1000),
+                    )
+                elif "No video formats" in error_str or "Unable to extract" in error_str:
+                    logger.error(
+                        "❌ YouTube format extraction FAILED",
+                        url=url_or_query[:80],
+                        error=error_str[:200],
+                        elapsed_ms=round(elapsed * 1000),
+                        hint="Video may be age-restricted or geo-blocked",
                     )
                 else:
                     logger.error(
@@ -450,40 +501,81 @@ class YouTubeAudioClient:
                 timeout_seconds=YTDL_TIMEOUT,
                 elapsed_ms=round(elapsed * 1000),
             )
-            return None
+            # Raise TimeoutError so caller knows it was a timeout, not "no results"
+            raise asyncio.TimeoutError(f"YouTube extraction timed out after {YTDL_TIMEOUT}s")
         
         if not info:
             elapsed = time.time() - overall_start
             logger.warning(
-                "🎵 get_audio_track returned None",
+                "🎵 get_audio_track returned None (no info from yt-dlp)",
                 query=url_or_query[:80],
                 elapsed_ms=round(elapsed * 1000),
             )
             return None
         
         # Find audio format URL - prefer lowest quality (Discord only supports 64kbps anyway)
+        format_start = time.time()
         audio_url = info.get("url")
+        selected_format = "direct_url"
+        
         if not audio_url:
             # Try to get from formats
             formats = info.get("formats", [])
             audio_formats = [f for f in formats if f.get("acodec") != "none"]
+            
+            logger.info(
+                "🔊 Selecting audio format",
+                total_formats=len(formats),
+                audio_formats=len(audio_formats),
+                title=info.get("title"),
+            )
+            
             if audio_formats:
                 # Sort by bitrate (lowest first) - we don't need high quality
                 audio_formats.sort(key=lambda f: f.get("abr") or f.get("tbr") or 999)
+                
+                # Log available formats for debugging
+                format_summary = [
+                    {
+                        "id": f.get("format_id"),
+                        "codec": f.get("acodec"),
+                        "abr": f.get("abr"),
+                        "ext": f.get("ext"),
+                    }
+                    for f in audio_formats[:5]  # Log top 5
+                ]
+                logger.debug("Available audio formats (top 5)", formats=format_summary)
                 
                 # Prefer opus (Discord native) at lowest bitrate
                 for fmt in audio_formats:
                     if fmt.get("acodec") == "opus":
                         audio_url = fmt.get("url")
+                        selected_format = f"opus_{fmt.get('abr', '?')}kbps"
                         break
                 
                 # Fall back to any low-bitrate format
                 if not audio_url:
-                    audio_url = audio_formats[0].get("url")
+                    chosen = audio_formats[0]
+                    audio_url = chosen.get("url")
+                    selected_format = f"{chosen.get('acodec', '?')}_{chosen.get('abr', '?')}kbps"
+        
+        format_elapsed = time.time() - format_start
         
         if not audio_url:
-            logger.error("No audio URL found", title=info.get("title"))
+            logger.error(
+                "❌ No audio URL found in response",
+                title=info.get("title"),
+                video_id=info.get("id"),
+                format_count=len(info.get("formats", [])),
+            )
             return None
+        
+        logger.info(
+            "🔊 Audio format selected",
+            format=selected_format,
+            format_selection_ms=round(format_elapsed * 1000),
+            url_length=len(audio_url),
+        )
         
         track = AudioTrack(
             url=audio_url,
@@ -496,6 +588,16 @@ class YouTubeAudioClient:
         
         # Cache the track for future requests
         self._cache_track(url_or_query, track)
+        
+        total_elapsed = time.time() - overall_start
+        logger.info(
+            "✅ get_audio_track COMPLETE",
+            title=track.title,
+            duration=track.duration_str,
+            format=selected_format,
+            total_ms=round(total_elapsed * 1000),
+            cached=False,
+        )
         
         return track
     

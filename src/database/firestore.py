@@ -223,6 +223,102 @@ class FirestoreClient:
         )
         await doc_ref.set(preferences.to_firestore(), merge=True)
     
+    # ==================== Stats Cache Operations ====================
+    
+    async def get_cached_stats(
+        self, 
+        battle_tag: str, 
+        max_age_hours: float = 1.0,
+    ) -> CompetitiveStats | None:
+        """Get cached Overfast stats if not expired.
+        
+        Args:
+            battle_tag: Player's BattleTag
+            max_age_hours: Maximum cache age in hours
+            
+        Returns:
+            CompetitiveStats if cache hit and not expired, None otherwise
+        """
+        # Normalize battletag for consistent cache keys
+        cache_key = battle_tag.lower().replace("#", "-")
+        doc_ref = self.client.collection(self._collection("stats_cache")).document(cache_key)
+        
+        try:
+            doc = await doc_ref.get()
+            
+            if not doc.exists:
+                logger.debug("Firestore cache MISS", battletag=battle_tag)
+                return None
+            
+            data = doc.to_dict() or {}
+            cached_at = data.get("cached_at")
+            
+            if not cached_at:
+                logger.debug("Firestore cache MISS (no timestamp)", battletag=battle_tag)
+                return None
+            
+            # Check if expired
+            age = datetime.now(UTC) - cached_at
+            age_hours = age.total_seconds() / 3600
+            
+            if age_hours > max_age_hours:
+                logger.info(
+                    "📦 Firestore cache EXPIRED",
+                    battletag=battle_tag,
+                    age_hours=round(age_hours, 2),
+                    max_age_hours=max_age_hours,
+                )
+                return None
+            
+            # Parse stats from cache
+            stats_data = data.get("stats")
+            if not stats_data:
+                return None
+            
+            stats = CompetitiveStats.model_validate(stats_data)
+            
+            logger.info(
+                "📦 Firestore cache HIT",
+                battletag=battle_tag,
+                age_hours=round(age_hours, 2),
+                tank=stats.tank.display,
+                damage=stats.damage.display,
+                support=stats.support.display,
+            )
+            
+            return stats
+            
+        except Exception as e:
+            logger.warning("Failed to get cached stats", battletag=battle_tag, error=str(e))
+            return None
+    
+    async def cache_stats(self, battle_tag: str, stats: CompetitiveStats) -> None:
+        """Cache Overfast stats in Firestore.
+        
+        Args:
+            battle_tag: Player's BattleTag
+            stats: Stats to cache
+        """
+        cache_key = battle_tag.lower().replace("#", "-")
+        doc_ref = self.client.collection(self._collection("stats_cache")).document(cache_key)
+        
+        try:
+            await doc_ref.set({
+                "battle_tag": battle_tag,
+                "stats": stats.model_dump(),
+                "cached_at": datetime.now(UTC),
+            })
+            
+            logger.info(
+                "📦 Firestore cache STORE",
+                battletag=battle_tag,
+                tank=stats.tank.display,
+                damage=stats.damage.display,
+                support=stats.support.display,
+            )
+        except Exception as e:
+            logger.warning("Failed to cache stats", battletag=battle_tag, error=str(e))
+    
     # ==================== Bulk Operations ====================
     
     async def get_all_accounts(self) -> list[Account]:

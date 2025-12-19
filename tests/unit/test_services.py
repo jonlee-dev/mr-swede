@@ -570,71 +570,14 @@ class TestThreadPoolExecutors:
         assert ffmpeg_exec is not ytdl_exec
 
 
-class TestOverwatchCogCaching:
-    """Tests for Overwatch cog caching functions."""
+class TestFirestoreCacheSettings:
+    """Tests for Overwatch cog Firestore cache settings."""
     
-    @pytest.fixture(autouse=True)
-    def reset_cache(self):
-        """Reset stats cache before each test."""
-        from src.cogs import overwatch as ow_module
-        ow_module._stats_cache.clear()
-        yield
-        ow_module._stats_cache.clear()
-    
-    def test_cache_stats_and_get(self):
-        """Test caching and retrieving stats."""
-        from src.cogs.overwatch import _cache_stats, _get_cached_stats
+    def test_cache_max_age_hours_is_reasonable(self):
+        """Test that cache max age is set to a reasonable value."""
+        from src.cogs.overwatch import CACHE_MAX_AGE_HOURS
         
-        stats = CompetitiveStats(
-            tank=RankInfo(division="Diamond", tier=2),
-            damage=RankInfo(division="Master", tier=3),
-            support=RankInfo(division="Platinum", tier=1),
-        )
-        
-        _cache_stats("Player#1234", stats)
-        
-        cached = _get_cached_stats("Player#1234")
-        assert cached is not None
-        assert cached.tank.division == "Diamond"
-        assert cached.damage.division == "Master"
-    
-    def test_cache_miss(self):
-        """Test cache miss returns None."""
-        from src.cogs.overwatch import _get_cached_stats
-        
-        cached = _get_cached_stats("Nonexistent#1234")
-        assert cached is None
-    
-    def test_cache_expired(self):
-        """Test expired cache returns None."""
-        from src.cogs.overwatch import _get_cached_stats, CACHE_TTL_SECONDS
-        from src.cogs import overwatch as ow_module
-        
-        stats = CompetitiveStats(
-            tank=RankInfo(division="Gold", tier=1),
-        )
-        
-        # Manually add expired entry
-        expired_time = time.time() - CACHE_TTL_SECONDS - 100
-        ow_module._stats_cache["Expired#1234"] = (stats, expired_time)
-        
-        cached = _get_cached_stats("Expired#1234")
-        assert cached is None
-        
-        # Entry should be removed
-        assert "Expired#1234" not in ow_module._stats_cache
-    
-    def test_cache_not_expired(self):
-        """Test valid cache entry is returned."""
-        from src.cogs.overwatch import _get_cached_stats, _cache_stats
-        
-        stats = CompetitiveStats(
-            tank=RankInfo(division="Silver", tier=5),
-        )
-        
-        _cache_stats("Recent#1234", stats)
-        
-        # Should still be valid
-        cached = _get_cached_stats("Recent#1234")
-        assert cached is not None
-        assert cached.tank.division == "Silver"
+        # Should be at least 30 minutes to reduce API calls
+        assert CACHE_MAX_AGE_HOURS >= 0.5
+        # Should be at most 24 hours for reasonably fresh data
+        assert CACHE_MAX_AGE_HOURS <= 24

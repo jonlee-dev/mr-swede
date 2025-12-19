@@ -5,6 +5,65 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.7] - 2024-12-19
+
+### 💾 Firestore-Based Stats Caching
+
+This release replaces in-memory caching with Firestore for Overfast stats, making the cache persist across container restarts.
+
+### Added
+
+- **Firestore stats cache** — Stats are now cached in Firestore (`mr_swede_stats_cache` collection)
+- **1-hour cache TTL** — Stats cached for 1 hour (persists across deployments/restarts)
+- **`get_cached_stats()` method** — FirestoreClient method to retrieve cached stats
+- **`cache_stats()` method** — FirestoreClient method to store stats
+
+### Changed
+
+- **Cache persistence** — Moved from in-memory dict to Firestore (survives restarts)
+- **Cache TTL** — Increased from 10 minutes to 1 hour to reduce API calls
+- **Cache key format** — Uses `battletag.lower().replace("#", "-")` for consistency
+
+### Removed
+
+- **In-memory stats cache** — Replaced with Firestore-based caching
+
+### Technical Notes
+
+- **Audio is NOT stored locally** — `skip_download=True` means we only extract URLs; FFmpeg streams directly from YouTube
+- **No persistence issues for music** — Audio streams directly from YouTube to Discord, no local storage
+
+---
+
+## [2.1.6] - 2024-12-19
+
+### 🐛 Timeout Error Handling & Heartbeat Fix
+
+This release fixes the "No Results" error shown when extraction times out, and reduces timeouts to prevent heartbeat blocking.
+
+### Fixed
+
+- **"No Results" shown on timeout** — Now correctly shows "Request Timed Out" when YouTube extraction times out
+- **Heartbeat blocked warnings** — Reduced yt-dlp timeout from 60s to 30s to prevent blocking Discord heartbeats
+- **Rate limit lock deadlock** — Added 5s timeout on rate limit lock acquisition
+- **Clearer 429 error messages** — Explains Cloud Run shared IP issue when Overfast API rate limits
+
+### Changed
+
+- **yt-dlp timeout** — Reduced from 60s to 30s for faster failure
+- **Socket timeout** — Reduced from 10s to 8s for faster response
+- **Rate limit interval** — Increased from 1.5s to 2s for Overfast API
+- **Rate limit logging** — Demoted from `info` to `debug` to reduce log noise
+- **TimeoutError propagation** — `get_audio_track()` now raises `TimeoutError` instead of returning `None`
+
+### Added
+
+- **Custom User-Agent for Overfast** — `MrSwedeBot/2.1` to potentially avoid shared rate limiting
+- **Rate limit header logging** — Logs `Retry-After` and rate limit headers on 429 errors
+- **Request timing logs** — Shows seconds since last request to help debug rate limiting
+
+---
+
 ## [2.1.5] - 2024-12-19
 
 ### 🧪 Comprehensive Test Coverage

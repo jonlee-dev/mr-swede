@@ -342,11 +342,17 @@ class MusicCog(commands.Cog, name="Music"):
             )
             
         except asyncio.TimeoutError:
-            logger.error("Audio extraction timed out", query=query)
+            total_elapsed = time_module.time() - start_time
+            logger.error(
+                "⏱️ Audio extraction timed out",
+                query=query[:80],
+                total_ms=round(total_elapsed * 1000),
+            )
             embed = discord.Embed(
-                title="⏱️ Extraction Timed Out",
+                title="⏱️ Request Timed Out",
                 description=(
-                    "YouTube took too long to respond. This can happen due to:\n"
+                    f"YouTube extraction took too long (>{30}s).\n\n"
+                    "This can happen due to:\n"
                     "• Slow network connection\n"
                     "• YouTube rate limiting\n"
                     "• Expired cookies\n\n"

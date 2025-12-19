@@ -15,52 +15,11 @@ from src.services import OverfastClient
 
 logger = get_logger(__name__)
 
-# Simple in-memory cache to reduce API calls
-# Format: {battletag: (stats, timestamp)}
-_stats_cache: dict[str, tuple[CompetitiveStats, float]] = {}
-CACHE_TTL_SECONDS = 600  # 10 minutes (increased due to strict rate limits)
+# Cache settings - using Firestore for persistence across restarts
+CACHE_MAX_AGE_HOURS = 1.0  # Stats cached for 1 hour
 
 # Rate limiting - Overfast API allows ~1 request per second
 RATE_LIMIT_DELAY = 1.5  # seconds between API calls
-
-
-def _get_cached_stats(battletag: str) -> CompetitiveStats | None:
-    """Get stats from cache if still valid."""
-    if battletag in _stats_cache:
-        stats, timestamp = _stats_cache[battletag]
-        age = time.time() - timestamp
-        if age < CACHE_TTL_SECONDS:
-            remaining = CACHE_TTL_SECONDS - age
-            logger.info(
-                "📦 Cache HIT",
-                battletag=battletag,
-                cache_age_seconds=round(age),
-                ttl_remaining_seconds=round(remaining),
-            )
-            return stats
-        else:
-            logger.info(
-                "📦 Cache EXPIRED",
-                battletag=battletag,
-                cache_age_seconds=round(age),
-            )
-            del _stats_cache[battletag]
-    else:
-        logger.info("📦 Cache MISS", battletag=battletag)
-    return None
-
-
-def _cache_stats(battletag: str, stats: CompetitiveStats) -> None:
-    """Cache stats for a player."""
-    _stats_cache[battletag] = (stats, time.time())
-    logger.info(
-        "📦 Cache STORE",
-        battletag=battletag,
-        ttl_seconds=CACHE_TTL_SECONDS,
-        tank=stats.tank.display,
-        damage=stats.damage.display,
-        support=stats.support.display,
-    )
 
 
 class OverwatchCog(commands.Cog, name="Overwatch"):
@@ -104,18 +63,19 @@ class OverwatchCog(commands.Cog, name="Overwatch"):
         await interaction.response.defer()
         
         try:
-            # Check cache first to avoid rate limits
-            stats = _get_cached_stats(battletag)
+            # Check Firestore cache first (persists across restarts)
+            stats = await self.db.get_cached_stats(battletag, max_age_hours=CACHE_MAX_AGE_HOURS)
             from_cache = stats is not None
             
             if not stats:
-                logger.info("🔄 Fetching fresh stats from API", battletag=battletag)
+                logger.info("🔄 Fetching fresh stats from Overfast API", battletag=battletag)
                 stats = await self.overfast.get_competitive_stats(battletag)
-                _cache_stats(battletag, stats)
+                # Store in Firestore cache for next time
+                await self.db.cache_stats(battletag, stats)
             
             embed = self._create_stats_embed(battletag, stats)
             if from_cache:
-                embed.set_footer(text="📦 Cached data (refreshes every 10 min)")
+                embed.set_footer(text="📦 Cached data (refreshes hourly)")
             await interaction.followup.send(embed=embed)
             
             elapsed = time.time() - start_time
@@ -129,13 +89,21 @@ class OverwatchCog(commands.Cog, name="Overwatch"):
             
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 429:
-                logger.warning("Rate limited by Overfast API", battletag=battletag)
+                logger.warning(
+                    "Rate limited by Overfast API",
+                    battletag=battletag,
+                    hint="Likely due to shared Cloud Run IP address",
+                )
                 embed = discord.Embed(
-                    title="⏳ Rate Limited",
+                    title="⏳ Rate Limited by Overfast API",
                     description=(
-                        "The Overfast API is rate limiting requests. "
-                        "Please wait a minute and try again.\n\n"
-                        "*This is a free community API with strict limits.*"
+                        "The Overfast API is rejecting requests.\n\n"
+                        "**Why this happens:**\n"
+                        "• Cloud Run shares IP addresses with other users\n"
+                        "• Overfast API rate limits by IP address\n"
+                        "• Other bots/users may be using your shared IP\n\n"
+                        "**Try again in 5-10 minutes.**\n\n"
+                        "*This is a limitation of using a free community API on shared infrastructure.*"
                     ),
                     color=discord.Color.orange(),
                 )
@@ -205,11 +173,11 @@ class OverwatchCog(commands.Cog, name="Overwatch"):
                 await interaction.followup.send(embed=embed)
                 return
             
-            # Verify the account exists (check cache first to avoid rate limits)
-            stats = _get_cached_stats(battletag)
+            # Verify the account exists (check Firestore cache first to avoid rate limits)
+            stats = await self.db.get_cached_stats(battletag, max_age_hours=CACHE_MAX_AGE_HOURS)
             if not stats:
                 stats = await self.overfast.get_competitive_stats(battletag)
-                _cache_stats(battletag, stats)
+                await self.db.cache_stats(battletag, stats)
             
             # If setting as main, unset other main accounts
             if main:
@@ -409,7 +377,7 @@ class OverwatchCog(commands.Cog, name="Overwatch"):
                 
                 try:
                     stats = await self.overfast.get_competitive_stats(account.battle_tag)
-                    _cache_stats(account.battle_tag, stats)  # Update cache
+                    await self.db.cache_stats(account.battle_tag, stats)  # Update Firestore cache
                     await self.db.update_account_stats(account.id, stats)
                     
                     # Record history

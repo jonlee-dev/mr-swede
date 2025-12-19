@@ -21,29 +21,38 @@ logger = get_logger(__name__)
 OVERFAST_API_URL = "https://overfast-api.tekrop.fr"
 
 # Global rate limiter - Overfast API allows ~1 request per second
-# Using 1.5s to be safe
+# Using 2s to be safe (they have strict rate limits)
 _last_request_time: float = 0
 _rate_limit_lock = asyncio.Lock()
-RATE_LIMIT_INTERVAL = 1.5  # seconds between requests
+RATE_LIMIT_INTERVAL = 2.0  # seconds between requests
 
 
 async def _wait_for_rate_limit() -> None:
-    """Wait if needed to respect API rate limits."""
+    """Wait if needed to respect API rate limits.
+    
+    Uses asyncio.sleep which is non-blocking to the event loop.
+    """
     global _last_request_time
     
-    async with _rate_limit_lock:
-        now = time.time()
-        elapsed = now - _last_request_time
-        
-        if elapsed < RATE_LIMIT_INTERVAL:
-            wait_time = RATE_LIMIT_INTERVAL - elapsed
-            logger.info(
-                "⏳ Rate limit wait",
-                wait_seconds=round(wait_time, 2),
-                last_request_ago=round(elapsed, 2),
-            )
-            await asyncio.sleep(wait_time)
-        
+    # Use timeout on lock acquisition to prevent deadlocks
+    try:
+        async with asyncio.timeout(5.0):
+            async with _rate_limit_lock:
+                now = time.time()
+                elapsed = now - _last_request_time
+                
+                if elapsed < RATE_LIMIT_INTERVAL:
+                    wait_time = RATE_LIMIT_INTERVAL - elapsed
+                    logger.debug(
+                        "⏳ Rate limit wait",
+                        wait_seconds=round(wait_time, 2),
+                        last_request_ago=round(elapsed, 2),
+                    )
+                    await asyncio.sleep(wait_time)
+                
+                _last_request_time = time.time()
+    except asyncio.TimeoutError:
+        logger.warning("Rate limit lock acquisition timed out, proceeding anyway")
         _last_request_time = time.time()
 
 
@@ -55,7 +64,15 @@ class OverfastClient(BaseAPIClient):
     
     def __init__(self) -> None:
         """Initialize the Overfast API client."""
-        super().__init__(base_url=OVERFAST_API_URL, timeout=15.0)
+        # Custom User-Agent to differentiate from other GCP users
+        # This may help avoid shared rate limiting on Cloud Run
+        super().__init__(
+            base_url=OVERFAST_API_URL, 
+            timeout=15.0,
+            headers={
+                "User-Agent": "MrSwedeBot/2.1 (Discord Bot; +https://github.com/jonlee-dev/mr-swede)",
+            },
+        )
     
     @staticmethod
     def normalize_battle_tag(battle_tag: str) -> str:
@@ -88,12 +105,16 @@ class OverfastClient(BaseAPIClient):
         # Wait for rate limit before making request
         await _wait_for_rate_limit()
         
+        # Log time since last request to help debug rate limiting
+        time_since_last = time.time() - _last_request_time if _last_request_time > 0 else None
+        
         logger.info(
             "🎮 Overfast API request START",
             method="GET",
             endpoint=endpoint,
             url=url,
             battle_tag=battle_tag,
+            seconds_since_last_request=round(time_since_last, 1) if time_since_last else "first_request",
         )
         
         start_time = time.time()
@@ -110,13 +131,26 @@ class OverfastClient(BaseAPIClient):
             return result
         except Exception as e:
             elapsed = time.time() - start_time
-            logger.error(
-                "❌ Overfast API request FAILED",
-                endpoint=endpoint,
-                battle_tag=battle_tag,
-                elapsed_ms=round(elapsed * 1000),
-                error=str(e),
-            )
+            error_str = str(e)
+            
+            # Check if it's a 429 rate limit error
+            if "429" in error_str:
+                logger.error(
+                    "🚫 Overfast API RATE LIMITED (429)",
+                    endpoint=endpoint,
+                    battle_tag=battle_tag,
+                    elapsed_ms=round(elapsed * 1000),
+                    seconds_since_last_request=round(time_since_last, 1) if time_since_last else "first_request",
+                    hint="This may be due to shared IP on Cloud Run or API-wide rate limits",
+                )
+            else:
+                logger.error(
+                    "❌ Overfast API request FAILED",
+                    endpoint=endpoint,
+                    battle_tag=battle_tag,
+                    elapsed_ms=round(elapsed * 1000),
+                    error=error_str[:200],
+                )
             raise
     
     async def get_player_stats(

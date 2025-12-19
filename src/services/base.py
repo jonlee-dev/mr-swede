@@ -74,6 +74,20 @@ class BaseAPIClient:
             params=params,
             headers=headers,
         )
+        
+        # Log rate limit headers if present (useful for debugging 429s)
+        if response.status_code == 429:
+            rate_limit_headers = {
+                k: v for k, v in response.headers.items()
+                if "rate" in k.lower() or "retry" in k.lower() or "limit" in k.lower()
+            }
+            logger.warning(
+                "Rate limited (429)",
+                endpoint=endpoint,
+                rate_limit_headers=rate_limit_headers or "none",
+                retry_after=response.headers.get("Retry-After"),
+            )
+        
         response.raise_for_status()
         return response.json()
     
