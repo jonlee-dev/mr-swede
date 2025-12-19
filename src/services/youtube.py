@@ -45,7 +45,7 @@ _ffmpeg_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="ffmpeg"
 # Timeout for yt-dlp operations (seconds)
 # Keep this SHORT to avoid blocking Discord heartbeats (must respond within 10s)
 # If extraction takes longer, it's better to fail fast and retry
-YTDL_TIMEOUT = 30  # Reduced from 60s to prevent heartbeat blocking
+YTDL_TIMEOUT = 25  # Reduced to 25s to account for overhead
 
 # Audio URL cache (URLs expire after ~6 hours, we cache for 4 hours)
 _audio_url_cache: dict[str, tuple["AudioTrack", float]] = {}
@@ -374,13 +374,12 @@ class YouTubeAudioClient:
                     ydl_init_time = time.time() - extract_start
                     logger.info("🔧 yt-dlp initialized", init_ms=round(ydl_init_time * 1000))
                     
-                    # If it's not a URL, search for it
+                    # If it's not a URL, search YouTube
                     if not is_url:
                         search_url = f"ytsearch1:{url_or_query}"
                         logger.info(
                             "🔍 YouTube SEARCH starting...",
                             query=url_or_query,
-                            search_url=search_url,
                         )
                         
                         search_start = time.time()
@@ -389,26 +388,35 @@ class YouTubeAudioClient:
                         
                         if not info:
                             logger.warning(
-                                "🔍 YouTube SEARCH returned no results",
+                                "🔍 YouTube SEARCH returned None",
                                 query=url_or_query,
                                 search_ms=round(search_elapsed * 1000),
                             )
                             return None
                         
+                        # Handle search results
                         if "entries" in info:
-                            entries = info["entries"]
+                            entries = info.get("entries", [])
                             entry_count = len(entries) if entries else 0
                             logger.info(
-                                "🔍 YouTube SEARCH got entries",
+                                "🔍 YouTube SEARCH got results",
                                 entry_count=entry_count,
                                 search_ms=round(search_elapsed * 1000),
                             )
+                            
                             if not entries:
-                                logger.warning("🔍 YouTube SEARCH returned empty entries", query=url_or_query)
+                                logger.warning(
+                                    "🔍 YouTube SEARCH empty entries",
+                                    query=url_or_query,
+                                )
                                 return None
+                            
                             info = entries[0]
                             if not info:
-                                logger.warning("🔍 YouTube SEARCH first entry is None", query=url_or_query)
+                                logger.warning(
+                                    "🔍 YouTube SEARCH first entry is None",
+                                    query=url_or_query,
+                                )
                                 return None
                         
                         total_elapsed = time.time() - extract_start

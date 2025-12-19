@@ -317,9 +317,7 @@ class MusicCog(commands.Cog, name="Music"):
                 
                 await interaction.followup.send(embed=embed)
             else:
-                # Play immediately
-                await self._play_track(voice_client, track, queue)
-                
+                # Send response FIRST (faster perceived response)
                 embed = discord.Embed(
                     title="🎵 Now Playing",
                     description=f"**{track.title}**",
@@ -331,7 +329,11 @@ class MusicCog(commands.Cog, name="Music"):
                 if track.thumbnail:
                     embed.set_thumbnail(url=track.thumbnail)
                 
+                # Send message immediately, then start playback
                 await interaction.followup.send(embed=embed)
+                
+                # Play in background (don't await - let it start while user sees the message)
+                asyncio.create_task(self._play_track(voice_client, track, queue))
             
             total_elapsed = time_module.time() - start_time
             logger.info(
@@ -862,6 +864,73 @@ class MusicCog(commands.Cog, name="Music"):
             embed.add_field(name="Link", value=f"[YouTube]({track.webpage_url})", inline=False)
         
         await interaction.response.send_message(embed=embed)
+    
+    @app_commands.command(name="music-debug", description="[Admin] Show music system debug info")
+    async def music_debug(self, interaction: discord.Interaction) -> None:
+        """Show debug info for music system. Owner-only command."""
+        # Check if user is the bot owner
+        if not BOT_OWNER_ID:
+            await interaction.response.send_message(
+                "❌ `DISCORD_OWNER_ID` not configured.",
+                ephemeral=True,
+            )
+            return
+        
+        try:
+            owner_id = int(BOT_OWNER_ID)
+        except ValueError:
+            await interaction.response.send_message("❌ Invalid owner ID.", ephemeral=True)
+            return
+        
+        if interaction.user.id != owner_id:
+            await interaction.response.send_message("❌ Owner only.", ephemeral=True)
+            return
+        
+        from src.services.youtube import (
+            COOKIES_TEMP_FILE, 
+            YTDL_TIMEOUT,
+            _audio_url_cache,
+        )
+        
+        # Check cookies status
+        cookies_status = "❌ Not found"
+        cookies_size = 0
+        if COOKIES_TEMP_FILE.exists():
+            cookies_size = COOKIES_TEMP_FILE.stat().st_size
+            if cookies_size > 100:
+                cookies_status = f"✅ Found ({cookies_size} bytes)"
+            else:
+                cookies_status = f"⚠️ Too small ({cookies_size} bytes)"
+        
+        # Check cache status
+        cache_count = len(_audio_url_cache)
+        
+        embed = discord.Embed(
+            title="🔧 Music System Debug",
+            color=discord.Color.blue(),
+        )
+        embed.add_field(
+            name="YouTube Cookies",
+            value=cookies_status,
+            inline=False,
+        )
+        embed.add_field(
+            name="Audio URL Cache",
+            value=f"{cache_count} tracks cached",
+            inline=True,
+        )
+        embed.add_field(
+            name="Extraction Timeout",
+            value=f"{YTDL_TIMEOUT}s",
+            inline=True,
+        )
+        embed.add_field(
+            name="Cookies Path",
+            value=f"`{COOKIES_TEMP_FILE}`",
+            inline=False,
+        )
+        
+        await interaction.response.send_message(embed=embed, ephemeral=True)
     
     @app_commands.command(name="refresh-cookies", description="[Admin] Refresh YouTube cookies from Secret Manager")
     async def refresh_cookies(self, interaction: discord.Interaction) -> None:

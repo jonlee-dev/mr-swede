@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.8] - 2024-12-19
+
+### ⚡ Faster Music Playback
+
+This release optimizes YouTube search and improves perceived response time.
+
+### Changed
+
+- **Two-phase search** — Flat search first (fast), then extract only the chosen video
+- **Instant feedback** — "Now Playing" message sent before FFmpeg initializes
+- **Background playback** — Playback starts in background task, doesn't block response
+
+### Added
+
+- **Detailed extraction logging** — Shows timing for each phase (flat search, extraction, format selection)
+- **Format selection logging** — Shows which audio codec/bitrate was chosen
+
+### Performance Improvement
+
+| Before | After |
+|--------|-------|
+| Search + Extract in one call (~5-10s) | Flat search (~1-2s) + Extract (~2-4s) |
+| Response after playback starts | Response immediately after track found |
+
+---
+
 ## [2.1.7] - 2024-12-19
 
 ### 💾 Firestore-Based Stats Caching
