@@ -51,9 +51,12 @@ YTDL_TIMEOUT = 25  # Reduced to 25s to account for overhead
 _audio_url_cache: dict[str, tuple["AudioTrack", float]] = {}
 AUDIO_URL_CACHE_TTL = 4 * 60 * 60  # 4 hours in seconds
 
-# Pre-initialized yt-dlp instance (avoids 50s+ cold start on Cloud Run)
-_ytdl_instance: yt_dlp.YoutubeDL | None = None
+# Pre-initialized yt-dlp instances (avoids 50s+ cold start on Cloud Run)
+# We need TWO instances: one for flat search, one for full extraction
+_ytdl_instance: yt_dlp.YoutubeDL | None = None  # Full extraction
 _ytdl_options: dict[str, Any] | None = None
+_ytdl_flat_instance: yt_dlp.YoutubeDL | None = None  # Flat search (fast)
+_ytdl_flat_options: dict[str, Any] | None = None
 
 
 def _fetch_cookies_from_gsm_sync() -> str | None:
@@ -158,27 +161,52 @@ def _build_ytdl_options() -> dict[str, Any]:
     return options
 
 
-def _init_ytdl_sync() -> yt_dlp.YoutubeDL:
-    """Initialize yt-dlp instance synchronously (SLOW - 30-50s on cold start).
+def _init_ytdl_sync() -> None:
+    """Initialize yt-dlp instances synchronously (SLOW - 30-50s on cold start).
     
     This should be called during bot startup when CPU is active,
     not during request handling when CPU may be throttled.
+    
+    Initializes TWO instances:
+    1. Full extraction instance (for getting audio URLs)
+    2. Flat search instance (for fast search, no full extraction)
     """
-    global _ytdl_instance, _ytdl_options
+    global _ytdl_instance, _ytdl_options, _ytdl_flat_instance, _ytdl_flat_options
     
-    if _ytdl_instance is not None:
-        return _ytdl_instance
+    if _ytdl_instance is not None and _ytdl_flat_instance is not None:
+        return
     
-    logger.info("🔧 Initializing yt-dlp (this may take 30-50s on first run)...")
+    logger.info("🔧 Initializing yt-dlp instances (this may take 30-50s on first run)...")
     start = time.time()
     
+    # Build base options
     _ytdl_options = _build_ytdl_options()
+    
+    # Full extraction instance
+    logger.info("🔧 Creating full extraction instance...")
     _ytdl_instance = yt_dlp.YoutubeDL(_ytdl_options)
     
-    elapsed = time.time() - start
-    logger.info("✅ yt-dlp initialized", init_seconds=round(elapsed, 1))
+    full_elapsed = time.time() - start
+    logger.info("✅ Full extraction instance ready", init_seconds=round(full_elapsed, 1))
     
-    return _ytdl_instance
+    # Flat search instance (with extract_flat=True for fast search)
+    logger.info("🔧 Creating flat search instance...")
+    flat_start = time.time()
+    _ytdl_flat_options = {
+        **_ytdl_options,
+        "extract_flat": True,  # Just get URL, no full extraction
+        "playlistend": 1,
+    }
+    _ytdl_flat_instance = yt_dlp.YoutubeDL(_ytdl_flat_options)
+    
+    flat_elapsed = time.time() - flat_start
+    total_elapsed = time.time() - start
+    logger.info(
+        "✅ Both yt-dlp instances initialized",
+        full_init_seconds=round(full_elapsed, 1),
+        flat_init_seconds=round(flat_elapsed, 1),
+        total_seconds=round(total_elapsed, 1),
+    )
 
 
 async def preload_ytdl() -> None:
@@ -380,62 +408,66 @@ class YouTubeAudioClient:
         def _flat_search(query: str) -> tuple[str | None, dict[str, Any]]:
             """Phase 1: Fast flat search to get video URL and basic info.
             
+            Uses pre-initialized flat search instance for speed.
+            
             Returns:
                 Tuple of (video_url, search_result_info)
             """
-            global _ytdl_options
-            
-            # Use options with extract_flat for fast search
-            flat_opts = {
-                **(_ytdl_options or _build_ytdl_options()),
-                "extract_flat": True,  # Just get URL, no full extraction
-                "playlistend": 1,
-            }
+            global _ytdl_flat_instance
             
             try:
-                with yt_dlp.YoutubeDL(flat_opts) as ydl:
+                # Use pre-initialized flat instance
+                if _ytdl_flat_instance is not None:
+                    ydl = _ytdl_flat_instance
+                    logger.info("🔍 Phase 1: Searching YouTube (using pre-initialized instance)...", query=query)
+                else:
+                    # Fallback: initialize now (slow)
+                    logger.warning("⚠️ Flat search instance not pre-initialized, initializing now (slow)")
+                    _init_ytdl_sync()
+                    ydl = _ytdl_flat_instance
                     logger.info("🔍 Phase 1: Searching YouTube...", query=query)
-                    search_start = time.time()
-                    
-                    info = ydl.extract_info(f"ytsearch1:{query}", download=False)
-                    
-                    search_elapsed = time.time() - search_start
-                    
-                    if not info:
-                        logger.warning("🔍 Phase 1: Search returned None", query=query)
-                        return None, {}
-                    
-                    entries = info.get("entries", [])
-                    if not entries:
-                        logger.warning("🔍 Phase 1: No results found", query=query)
-                        return None, {}
-                    
-                    first = entries[0]
-                    if not first:
-                        logger.warning("🔍 Phase 1: First entry is None", query=query)
-                        return None, {}
-                    
-                    video_url = first.get("url") or first.get("webpage_url")
-                    video_id = first.get("id")
-                    
-                    # If we got a video ID but no URL, construct it
-                    if not video_url and video_id:
-                        video_url = f"https://www.youtube.com/watch?v={video_id}"
-                    
-                    # Log the search result clearly
-                    logger.info(
-                        "🎯 SEARCH RESULT",
-                        query=query,
-                        title=first.get("title"),
-                        channel=first.get("channel") or first.get("uploader"),
-                        video_id=video_id,
-                        duration=first.get("duration"),
-                        view_count=first.get("view_count"),
-                        url=video_url,
-                        search_ms=round(search_elapsed * 1000),
-                    )
-                    
-                    return video_url, first
+                
+                search_start = time.time()
+                
+                info = ydl.extract_info(f"ytsearch1:{query}", download=False)
+                
+                search_elapsed = time.time() - search_start
+                
+                if not info:
+                    logger.warning("🔍 Phase 1: Search returned None", query=query, search_ms=round(search_elapsed * 1000))
+                    return None, {}
+                
+                entries = info.get("entries", [])
+                if not entries:
+                    logger.warning("🔍 Phase 1: No results found", query=query, search_ms=round(search_elapsed * 1000))
+                    return None, {}
+                
+                first = entries[0]
+                if not first:
+                    logger.warning("🔍 Phase 1: First entry is None", query=query)
+                    return None, {}
+                
+                video_url = first.get("url") or first.get("webpage_url")
+                video_id = first.get("id")
+                
+                # If we got a video ID but no URL, construct it
+                if not video_url and video_id:
+                    video_url = f"https://www.youtube.com/watch?v={video_id}"
+                
+                # Log the search result clearly
+                logger.info(
+                    "🎯 SEARCH RESULT",
+                    query=query,
+                    title=first.get("title"),
+                    channel=first.get("channel") or first.get("uploader"),
+                    video_id=video_id,
+                    duration=first.get("duration"),
+                    view_count=first.get("view_count"),
+                    url=video_url,
+                    search_ms=round(search_elapsed * 1000),
+                )
+                
+                return video_url, first
             except Exception as e:
                 logger.error("❌ Phase 1: Search failed", query=query, error=str(e)[:200])
                 return None, {}

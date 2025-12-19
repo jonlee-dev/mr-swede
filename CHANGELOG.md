@@ -5,6 +5,47 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.12] - 2024-12-19
+
+### 🔧 Pre-Initialize BOTH yt-dlp Instances
+
+Fixed the remaining 24-second delay in Phase 1 search by pre-initializing the flat search instance too.
+
+### The Problem
+
+We were pre-initializing the full extraction instance, but still creating a NEW instance for flat search:
+```
+20:37:02 - get_audio_track START
+20:37:26 - Phase 1: Searching YouTube (24 SECONDS later!)
+```
+
+The 24s delay was the flat search instance being created on-demand.
+
+### The Fix
+
+Now pre-initialize **TWO** yt-dlp instances during startup:
+1. **Full extraction instance** — For getting audio URLs from videos
+2. **Flat search instance** — For fast search (extract_flat=True)
+
+### Expected Startup Logs
+
+```
+🔧 Initializing yt-dlp instances...
+🔧 Creating full extraction instance...
+✅ Full extraction instance ready (init_seconds: 25.3)
+🔧 Creating flat search instance...
+✅ Both yt-dlp instances initialized (total_seconds: 50.1)
+```
+
+### Expected Request Logs
+
+```
+🔍 Phase 1: Searching YouTube (using pre-initialized instance)...
+🎯 SEARCH RESULT (search_ms: 2000)  ← INSTANT!
+```
+
+---
+
 ## [2.1.11] - 2024-12-19
 
 ### ⚡ Two-Phase YouTube Search
