@@ -51,6 +51,10 @@ YTDL_TIMEOUT = 25  # Reduced to 25s to account for overhead
 _audio_url_cache: dict[str, tuple["AudioTrack", float]] = {}
 AUDIO_URL_CACHE_TTL = 4 * 60 * 60  # 4 hours in seconds
 
+# Pre-initialized yt-dlp instance (avoids 50s+ cold start on Cloud Run)
+_ytdl_instance: yt_dlp.YoutubeDL | None = None
+_ytdl_options: dict[str, Any] | None = None
+
 
 def _fetch_cookies_from_gsm_sync() -> str | None:
     """Fetch YouTube cookies from Google Secret Manager (synchronous).
@@ -117,6 +121,76 @@ def _get_cookies_path_sync() -> str | None:
     return None
 
 
+def _build_ytdl_options() -> dict[str, Any]:
+    """Build yt-dlp options dictionary."""
+    options = {
+        "format": "bestaudio/best",
+        "noplaylist": True,
+        "quiet": True,
+        "no_warnings": True,
+        "extract_flat": False,
+        "nocheckcertificate": True,
+        "ignoreerrors": False,
+        "logtostderr": False,
+        "geo_bypass": True,
+        "source_address": "0.0.0.0",
+        "socket_timeout": 8,
+        "http_chunk_size": 1048576,
+        "retries": 0,
+        "fragment_retries": 0,
+        "extractor_retries": 0,
+        "file_access_retries": 0,
+        "skip_download": True,
+        "no_check_formats": True,
+        "youtube_include_dash_manifest": False,
+        "youtube_include_hls_manifest": False,
+        # Speed up initialization
+        "cachedir": False,  # Disable cache (faster startup)
+        "no_color": True,   # Skip color processing
+    }
+    
+    # Add cookies if available
+    cookies_path = _get_cookies_path_sync()
+    if cookies_path:
+        options["cookiefile"] = cookies_path
+        logger.info("YouTube cookies configured", path=cookies_path)
+    
+    return options
+
+
+def _init_ytdl_sync() -> yt_dlp.YoutubeDL:
+    """Initialize yt-dlp instance synchronously (SLOW - 30-50s on cold start).
+    
+    This should be called during bot startup when CPU is active,
+    not during request handling when CPU may be throttled.
+    """
+    global _ytdl_instance, _ytdl_options
+    
+    if _ytdl_instance is not None:
+        return _ytdl_instance
+    
+    logger.info("🔧 Initializing yt-dlp (this may take 30-50s on first run)...")
+    start = time.time()
+    
+    _ytdl_options = _build_ytdl_options()
+    _ytdl_instance = yt_dlp.YoutubeDL(_ytdl_options)
+    
+    elapsed = time.time() - start
+    logger.info("✅ yt-dlp initialized", init_seconds=round(elapsed, 1))
+    
+    return _ytdl_instance
+
+
+async def preload_ytdl() -> None:
+    """Pre-initialize yt-dlp during bot startup.
+    
+    This avoids the 30-50s initialization delay on first request
+    when Cloud Run CPU is throttled.
+    """
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(_ytdl_executor, _init_ytdl_sync)
+
+
 async def preload_cookies() -> None:
     """Pre-load cookies from GSM during bot startup.
     
@@ -132,6 +206,11 @@ async def preload_cookies() -> None:
             "No YouTube cookies available - playback may fail. "
             "See TODO.md for instructions on setting up cookies."
         )
+    
+    # Also pre-initialize yt-dlp while CPU is active
+    logger.info("Pre-initializing yt-dlp...")
+    await preload_ytdl()
+    logger.info("✅ YouTube client fully initialized")
 
 
 @dataclass
@@ -168,65 +247,10 @@ class YouTubeAudioClient:
     def __init__(self) -> None:
         """Initialize the YouTube audio client.
         
-        NOTE: Call preload_cookies() before using this client to ensure
-        cookies are loaded without blocking the event loop.
+        NOTE: Call preload_cookies() during bot startup to ensure
+        yt-dlp is pre-initialized before handling requests.
         """
-        self._options: dict[str, Any] | None = None
-        self._initialized = False
-    
-    def _ensure_initialized(self) -> dict[str, Any]:
-        """Lazily initialize options (uses cached cookies only)."""
-        if self._options is None:
-            self._options = self._build_options()
-            self._initialized = True
-        return self._options
-    
-    def _build_options(self) -> dict[str, Any]:
-        """Build yt-dlp options, including cookies if available."""
-        # Discord voice uses 48kHz 64kbps opus - no point getting high quality
-        # Use permissive format selection to avoid "format not available" errors
-        options = {
-            # bestaudio = best available audio-only format
-            # best = fallback to best video+audio if no audio-only available
-            # This is more reliable than restrictive format filters
-            "format": "bestaudio/best",
-            "noplaylist": True,
-            "quiet": True,
-            "no_warnings": True,
-            "extract_flat": False,
-            "nocheckcertificate": True,
-            "ignoreerrors": False,
-            "logtostderr": False,
-            "geo_bypass": True,
-            "source_address": "0.0.0.0",
-            # Socket timeout to prevent hanging - keep short for responsiveness
-            "socket_timeout": 8,
-            # HTTP chunk size for faster initial response
-            "http_chunk_size": 1048576,  # 1MB chunks
-            # Disable retries - APIs have strict rate limits
-            "retries": 0,
-            "fragment_retries": 0,
-            "extractor_retries": 0,
-            "file_access_retries": 0,
-            # Skip unnecessary processing
-            "skip_download": True,
-            "no_check_formats": True,  # Skip format availability check (faster)
-            "youtube_include_dash_manifest": False,  # Skip DASH (we don't need it)
-            "youtube_include_hls_manifest": False,   # Skip HLS (we don't need it)
-        }
-        
-        # Add cookies if available (uses cached cookies only - no GSM call here)
-        cookies_path = _get_cookies_path_sync()
-        if cookies_path:
-            options["cookiefile"] = cookies_path
-            logger.info("YouTube cookies configured", path=cookies_path)
-        else:
-            logger.warning(
-                "No YouTube cookies found - may be blocked by YouTube bot detection. "
-                "See TODO.md for instructions on adding cookies."
-            )
-        
-        return options
+        pass  # All state is now module-level for reuse
     
     async def search(self, query: str, limit: int = 5) -> list[dict[str, Any]]:
         """Search YouTube for videos.
@@ -238,9 +262,10 @@ class YouTubeAudioClient:
         Returns:
             List of video info dictionaries
         """
-        options = self._ensure_initialized()
+        # Use global options as base, with search-specific overrides
+        base_opts = _ytdl_options or _build_ytdl_options()
         search_opts = {
-            **options,
+            **base_opts,
             "extract_flat": True,
             "playlistend": limit,
         }
@@ -350,102 +375,102 @@ class YouTubeAudioClient:
                 )
                 return cached
         
-        options = self._ensure_initialized()
-        
         is_url = url_or_query.startswith(("http://", "https://"))
         
         def _extract() -> dict[str, Any] | None:
+            global _ytdl_instance
             extract_start = time.time()
+            
             try:
-                logger.info(
-                    "🔧 Creating yt-dlp instance",
-                    has_cookies=options.get("cookiefile") is not None,
-                    format=options.get("format", "default")[:50],
-                )
+                # Use pre-initialized instance if available, otherwise create new one
+                if _ytdl_instance is not None:
+                    ydl = _ytdl_instance
+                    logger.info("🔧 Using pre-initialized yt-dlp instance")
+                else:
+                    # Fallback: initialize now (slow, but better than failing)
+                    logger.warning("⚠️ yt-dlp not pre-initialized, creating new instance (slow)")
+                    _init_ytdl_sync()
+                    ydl = _ytdl_instance
                 
-                with yt_dlp.YoutubeDL(options) as ydl:
-                    ydl_init_time = time.time() - extract_start
-                    logger.info("🔧 yt-dlp initialized", init_ms=round(ydl_init_time * 1000))
+                # If it's not a URL, search YouTube
+                if not is_url:
+                    search_url = f"ytsearch1:{url_or_query}"
+                    logger.info(
+                        "🔍 YouTube SEARCH starting...",
+                        query=url_or_query,
+                    )
                     
-                    # If it's not a URL, search YouTube
-                    if not is_url:
-                        search_url = f"ytsearch1:{url_or_query}"
-                        logger.info(
-                            "🔍 YouTube SEARCH starting...",
+                    search_start = time.time()
+                    info = ydl.extract_info(search_url, download=False)
+                    search_elapsed = time.time() - search_start
+                    
+                    if not info:
+                        logger.warning(
+                            "🔍 YouTube SEARCH returned None",
                             query=url_or_query,
+                            search_ms=round(search_elapsed * 1000),
+                        )
+                        return None
+                    
+                    # Handle search results
+                    if "entries" in info:
+                        entries = info.get("entries", [])
+                        entry_count = len(entries) if entries else 0
+                        logger.info(
+                            "🔍 YouTube SEARCH got results",
+                            entry_count=entry_count,
+                            search_ms=round(search_elapsed * 1000),
                         )
                         
-                        search_start = time.time()
-                        info = ydl.extract_info(search_url, download=False)
-                        search_elapsed = time.time() - search_start
-                        
-                        if not info:
+                        if not entries:
                             logger.warning(
-                                "🔍 YouTube SEARCH returned None",
+                                "🔍 YouTube SEARCH empty entries",
                                 query=url_or_query,
-                                search_ms=round(search_elapsed * 1000),
                             )
                             return None
                         
-                        # Handle search results
-                        if "entries" in info:
-                            entries = info.get("entries", [])
-                            entry_count = len(entries) if entries else 0
-                            logger.info(
-                                "🔍 YouTube SEARCH got results",
-                                entry_count=entry_count,
-                                search_ms=round(search_elapsed * 1000),
+                        info = entries[0]
+                        if not info:
+                            logger.warning(
+                                "🔍 YouTube SEARCH first entry is None",
+                                query=url_or_query,
                             )
-                            
-                            if not entries:
-                                logger.warning(
-                                    "🔍 YouTube SEARCH empty entries",
-                                    query=url_or_query,
-                                )
-                                return None
-                            
-                            info = entries[0]
-                            if not info:
-                                logger.warning(
-                                    "🔍 YouTube SEARCH first entry is None",
-                                    query=url_or_query,
-                                )
-                                return None
-                        
-                        total_elapsed = time.time() - extract_start
-                        logger.info(
-                            "✅ YouTube SEARCH complete",
-                            query=url_or_query,
-                            title=info.get("title"),
-                            video_id=info.get("id"),
-                            duration=info.get("duration"),
-                            search_ms=round(search_elapsed * 1000),
-                            total_ms=round(total_elapsed * 1000),
-                            has_url="url" in info,
-                            format_count=len(info.get("formats", [])),
-                        )
-                    else:
-                        logger.info(
-                            "🎬 YouTube EXTRACT starting...",
-                            url=url_or_query[:80],
-                        )
-                        
-                        extract_api_start = time.time()
-                        info = ydl.extract_info(url_or_query, download=False)
-                        extract_elapsed = time.time() - extract_api_start
-                        
-                        total_elapsed = time.time() - extract_start
-                        logger.info(
-                            "✅ YouTube EXTRACT complete",
-                            title=info.get("title") if info else None,
-                            video_id=info.get("id") if info else None,
-                            extract_ms=round(extract_elapsed * 1000),
-                            total_ms=round(total_elapsed * 1000),
-                            has_url="url" in info if info else False,
-                            format_count=len(info.get("formats", [])) if info else 0,
-                        )
+                            return None
                     
-                    return info
+                    total_elapsed = time.time() - extract_start
+                    logger.info(
+                        "✅ YouTube SEARCH complete",
+                        query=url_or_query,
+                        title=info.get("title"),
+                        video_id=info.get("id"),
+                        duration=info.get("duration"),
+                        search_ms=round(search_elapsed * 1000),
+                        total_ms=round(total_elapsed * 1000),
+                        has_url="url" in info,
+                        format_count=len(info.get("formats", [])),
+                    )
+                else:
+                    logger.info(
+                        "🎬 YouTube EXTRACT starting...",
+                        url=url_or_query[:80],
+                    )
+                    
+                    extract_api_start = time.time()
+                    info = ydl.extract_info(url_or_query, download=False)
+                    extract_elapsed = time.time() - extract_api_start
+                    
+                    total_elapsed = time.time() - extract_start
+                    logger.info(
+                        "✅ YouTube EXTRACT complete",
+                        title=info.get("title") if info else None,
+                        video_id=info.get("id") if info else None,
+                        extract_ms=round(extract_elapsed * 1000),
+                        total_ms=round(total_elapsed * 1000),
+                        has_url="url" in info if info else False,
+                        format_count=len(info.get("formats", [])) if info else 0,
+                    )
+                
+                return info
             except Exception as e:
                 elapsed = time.time() - extract_start
                 error_str = str(e)
@@ -636,9 +661,10 @@ class YouTubeAudioClient:
         Returns:
             List of track info dictionaries
         """
-        options = self._ensure_initialized()
+        # Use global options as base, with playlist-specific overrides
+        base_opts = _ytdl_options or _build_ytdl_options()
         playlist_opts = {
-            **options,
+            **base_opts,
             "extract_flat": True,
             "playlistend": limit,
             "noplaylist": False,

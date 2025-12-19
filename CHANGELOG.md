@@ -5,6 +5,40 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.10] - 2024-12-19
+
+### 🚀 Pre-Initialize yt-dlp on Startup
+
+Fixed the 50+ second yt-dlp initialization delay on Cloud Run by pre-loading during bot startup.
+
+### The Problem
+
+On Cloud Run with CPU throttling, yt-dlp initialization (loading 1000+ extractors) takes 30-50 seconds when CPU is throttled. This caused:
+- Requests timing out at 25s while yt-dlp was still initializing
+- "Interaction expired" errors from Discord
+- Bot appearing unresponsive
+
+### The Fix
+
+- **Pre-initialize yt-dlp during startup** — `preload_cookies()` now also calls `preload_ytdl()` to initialize yt-dlp while CPU is active
+- **Reuse yt-dlp instance** — Single global instance reused across all requests (no per-request initialization)
+- **Faster startup options** — Added `cachedir: False`, `no_color: True` to speed up initialization
+
+### Added
+
+- **`preload_ytdl()`** — New async function to pre-initialize yt-dlp in background
+- **Global yt-dlp instance** — `_ytdl_instance` reused across all extractions
+- **Startup logging** — Shows yt-dlp initialization time during startup
+
+### Performance Impact
+
+| Before | After |
+|--------|-------|
+| 30-50s first request | ~1-5s (search only) |
+| New instance per request | Single reused instance |
+
+---
+
 ## [2.1.9] - 2024-12-19
 
 ### 🔧 Format Selection Hotfix
