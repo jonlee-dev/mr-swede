@@ -1,8 +1,10 @@
 """Overwatch stats tracking commands."""
 
+import time
 from datetime import UTC, datetime
 
 import discord
+import httpx
 from discord import app_commands
 from discord.ext import commands
 
@@ -11,6 +13,29 @@ from src.database import Account, CompetitiveStats, StatsHistory, get_firestore_
 from src.services import OverfastClient
 
 logger = get_logger(__name__)
+
+# Simple in-memory cache to reduce API calls
+# Format: {battletag: (stats, timestamp)}
+_stats_cache: dict[str, tuple[CompetitiveStats, float]] = {}
+CACHE_TTL_SECONDS = 300  # 5 minutes
+
+
+def _get_cached_stats(battletag: str) -> CompetitiveStats | None:
+    """Get stats from cache if still valid."""
+    if battletag in _stats_cache:
+        stats, timestamp = _stats_cache[battletag]
+        if time.time() - timestamp < CACHE_TTL_SECONDS:
+            logger.debug("Cache hit", battletag=battletag)
+            return stats
+        else:
+            del _stats_cache[battletag]
+    return None
+
+
+def _cache_stats(battletag: str, stats: CompetitiveStats) -> None:
+    """Cache stats for a player."""
+    _stats_cache[battletag] = (stats, time.time())
+    logger.debug("Cached stats", battletag=battletag)
 
 
 class OverwatchCog(commands.Cog, name="Overwatch"):
@@ -45,12 +70,53 @@ class OverwatchCog(commands.Cog, name="Overwatch"):
         await interaction.response.defer()
         
         try:
-            stats = await self.overfast.get_competitive_stats(battletag)
+            # Check cache first to avoid rate limits
+            stats = _get_cached_stats(battletag)
+            from_cache = stats is not None
+            
+            if not stats:
+                stats = await self.overfast.get_competitive_stats(battletag)
+                _cache_stats(battletag, stats)
             
             embed = self._create_stats_embed(battletag, stats)
+            if from_cache:
+                embed.set_footer(text="📦 Cached data (refreshes every 5 min)")
             await interaction.followup.send(embed=embed)
             
-            logger.info("Stats fetched", battletag=battletag, user=str(interaction.user))
+            logger.info("Stats fetched", battletag=battletag, user=str(interaction.user), cached=from_cache)
+            
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 429:
+                logger.warning("Rate limited by Overfast API", battletag=battletag)
+                embed = discord.Embed(
+                    title="⏳ Rate Limited",
+                    description=(
+                        "The Overfast API is rate limiting requests. "
+                        "Please wait a minute and try again.\n\n"
+                        "*This is a free community API with strict limits.*"
+                    ),
+                    color=discord.Color.orange(),
+                )
+            elif e.response.status_code == 404:
+                logger.warning("Player not found", battletag=battletag)
+                embed = discord.Embed(
+                    title="❌ Player Not Found",
+                    description=(
+                        f"Could not find player `{battletag}`.\n\n"
+                        "Make sure:\n"
+                        "• BattleTag is correct (e.g., `Player#1234`)\n"
+                        "• Profile is set to **Public** in Overwatch settings"
+                    ),
+                    color=discord.Color.red(),
+                )
+            else:
+                logger.error("API error", battletag=battletag, status=e.response.status_code)
+                embed = discord.Embed(
+                    title="❌ API Error",
+                    description=f"Overfast API returned an error (HTTP {e.response.status_code}).",
+                    color=discord.Color.red(),
+                )
+            await interaction.followup.send(embed=embed)
             
         except Exception as e:
             logger.error("Failed to fetch stats", battletag=battletag, error=str(e))

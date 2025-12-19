@@ -106,7 +106,7 @@ class MusicCog(commands.Cog, name="Music"):
                         "1. Export fresh cookies from your browser\n"
                         "2. Upload to Secret Manager:\n"
                         "```\n"
-                        "gcloud secrets versions add youtube-cookies \\\n"
+                        "gcloud secrets versions add youtube-cookie \\\n"
                         "  --data-file=cookies.txt \\\n"
                         "  --project=mr-swede\n"
                         "```\n"
@@ -621,7 +621,7 @@ class MusicCog(commands.Cog, name="Music"):
     async def refresh_cookies(self, interaction: discord.Interaction) -> None:
         """Refresh YouTube cookies from GSM. Owner-only command.
         
-        Use this after updating the youtube-cookies secret in GSM.
+        Use this after updating the youtube-cookie secret in GSM.
         """
         # Check if user is the bot owner
         if not BOT_OWNER_ID:
@@ -683,7 +683,7 @@ class MusicCog(commands.Cog, name="Music"):
                     title="⚠️ No Cookies Found",
                     description=(
                         "Could not fetch cookies from Secret Manager.\n\n"
-                        "Make sure the `youtube-cookies` secret exists and contains valid Netscape cookie data."
+                        "Make sure the `youtube-cookie` secret exists and contains valid Netscape cookie data."
                     ),
                     color=discord.Color.orange(),
                 )

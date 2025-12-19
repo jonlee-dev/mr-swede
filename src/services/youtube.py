@@ -24,7 +24,7 @@ COOKIES_FILE_LOCAL = Path("cookies.txt")
 COOKIES_TEMP_FILE = Path("/tmp/youtube_cookies.txt")
 
 # Secret Manager path for cookies
-YOUTUBE_COOKIES_SECRET = "projects/mr-swede/secrets/youtube-cookies/versions/latest"
+YOUTUBE_COOKIES_SECRET = "projects/mr-swede/secrets/youtube-cookie/versions/latest"
 
 # Dedicated thread pool for yt-dlp operations (prevents blocking main event loop)
 _ytdl_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="ytdl")

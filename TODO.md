@@ -159,12 +159,12 @@ YouTube blocks requests from cloud servers (bot detection). To enable music play
 
 ```bash
 # Create the secret
-gcloud secrets create youtube-cookies \
+gcloud secrets create youtube-cookie \
   --data-file=cookies.txt \
   --project=mr-swede
 
 # Grant access to the service account
-gcloud secrets add-iam-policy-binding youtube-cookies \
+gcloud secrets add-iam-policy-binding youtube-cookie \
   --member="serviceAccount:mr-swede-sa@mr-swede.iam.gserviceaccount.com" \
   --role="roles/secretmanager.secretAccessor" \
   --project=mr-swede
@@ -182,7 +182,7 @@ gcloud run services update mr-swede --region=us-east4 \
 When cookies expire (usually every few weeks), re-export and update:
 
 ```bash
-gcloud secrets versions add youtube-cookies \
+gcloud secrets versions add youtube-cookie \
   --data-file=cookies.txt \
   --project=mr-swede
 ```

@@ -29,6 +29,8 @@ This release fixes the "websocket is Xs behind" error that caused Discord connec
 - **`/refresh-cookies` command** — Owner-only admin command to refresh YouTube cookies from GSM without restarting the bot
 - **`preload_cookies()` function** — Async function to fetch YouTube cookies from GSM during bot startup
 - **Cookies caching** — Cookies fetched once and cached to `/tmp/youtube_cookies.txt`
+- **Overwatch stats caching** — In-memory cache (5 min TTL) to reduce Overfast API calls and avoid rate limits
+- **Better error messages** — `/ow stats` now shows specific errors for rate limiting (429), player not found (404), and other API errors
 
 ### Changed (API Rate Limiting)
 
