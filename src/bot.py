@@ -4,6 +4,7 @@ import discord
 from discord.ext import commands
 
 from src.config.logging import get_logger, setup_logging
+from src.config.secrets import get_secrets
 from src.config.settings import get_settings
 
 logger = get_logger(__name__)
@@ -15,6 +16,7 @@ class MrSwede(commands.Bot):
     def __init__(self) -> None:
         """Initialize the bot."""
         settings = get_settings()
+        secrets = get_secrets(discord_bot_name=settings.discord_bot_name)
         
         intents = discord.Intents.default()
         intents.message_content = True
@@ -29,6 +31,7 @@ class MrSwede(commands.Bot):
         )
         
         self.settings = settings
+        self.secrets = secrets
     
     async def setup_hook(self) -> None:
         """Called before the bot starts, used for async setup."""
@@ -66,6 +69,7 @@ class MrSwede(commands.Bot):
                 user=str(self.user),
                 user_id=self.user.id,
                 guilds=len(self.guilds),
+                bot_name=self.settings.discord_bot_name,
             )
         
         # Set presence
@@ -98,3 +102,27 @@ def create_bot() -> MrSwede:
     setup_logging()
     return MrSwede()
 
+
+def get_bot_token() -> str:
+    """Get the Discord bot token from secrets.
+    
+    Returns:
+        Discord bot token
+        
+    Raises:
+        ValueError: If no token is available
+    """
+    settings = get_settings()
+    secrets = get_secrets(discord_bot_name=settings.discord_bot_name)
+    
+    if secrets.discord and secrets.discord.token:
+        return secrets.discord.token
+    
+    # Fallback to environment variable
+    if settings.discord_token:
+        return settings.discord_token.get_secret_value()
+    
+    raise ValueError(
+        f"No Discord token found for bot '{settings.discord_bot_name}'. "
+        "Ensure secrets are configured in GSM or set DISCORD_TOKEN env var."
+    )

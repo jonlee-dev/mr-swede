@@ -11,6 +11,7 @@ This client is useful for:
 from typing import Any
 
 from src.config.logging import get_logger
+from src.config.secrets import get_secrets
 from src.config.settings import get_settings
 from src.services.base import OAuthClient
 
@@ -24,24 +25,39 @@ class BlizzardClient(OAuthClient):
         self,
         client_id: str | None = None,
         client_secret: str | None = None,
-        region: str = "us",
+        region: str | None = None,
     ) -> None:
         """Initialize Blizzard API client.
         
         Args:
-            client_id: Blizzard API client ID
-            client_secret: Blizzard API client secret
+            client_id: Blizzard API client ID (loaded from secrets if not provided)
+            client_secret: Blizzard API client secret (loaded from secrets if not provided)
             region: API region (us, eu, kr, tw, cn)
         """
         settings = get_settings()
+        secrets = get_secrets()
         
-        self.region = region
-        _client_id = client_id or settings.blizzard_client_id
-        _client_secret = client_secret or settings.blizzard_client_secret.get_secret_value()
+        self.region = region or settings.blizzard_region
+        
+        # Get credentials from secrets or parameters
+        if client_id and client_secret:
+            _client_id = client_id
+            _client_secret = client_secret
+        elif secrets.blizzard:
+            _client_id = secrets.blizzard.client_id
+            _client_secret = secrets.blizzard.client_secret
+        elif settings.blizzard_client_id and settings.blizzard_client_secret:
+            _client_id = settings.blizzard_client_id
+            _client_secret = settings.blizzard_client_secret.get_secret_value()
+        else:
+            raise ValueError(
+                "Blizzard credentials not found. "
+                "Configure in GSM or set BLIZZARD_CLIENT_ID and BLIZZARD_CLIENT_SECRET env vars."
+            )
         
         super().__init__(
-            base_url=f"https://{region}.api.blizzard.com",
-            token_url=f"https://{region}.battle.net/oauth/token",
+            base_url=f"https://{self.region}.api.blizzard.com",
+            token_url=f"https://{self.region}.battle.net/oauth/token",
             client_id=_client_id,
             client_secret=_client_secret,
         )
@@ -163,3 +179,15 @@ class BlizzardClient(OAuthClient):
             logger.error("Blizzard API health check failed", error=str(e))
             return False
 
+
+def get_blizzard_client() -> BlizzardClient | None:
+    """Get a Blizzard client if credentials are available.
+    
+    Returns:
+        BlizzardClient or None if credentials not configured
+    """
+    try:
+        return BlizzardClient()
+    except ValueError:
+        logger.warning("Blizzard client not available - credentials not configured")
+        return None

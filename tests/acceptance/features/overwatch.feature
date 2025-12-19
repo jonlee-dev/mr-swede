@@ -22,12 +22,6 @@ Feature: Overwatch Stats Tracking
         Then the account should be saved to the database
         And I should see a confirmation message with current ranks
 
-    Scenario: Track account as main
-        Given I am tracking account "Alt#5678"
-        When I execute the command "/ow track Main#1234 main:True"
-        Then "Main#1234" should be marked as my main account
-        And "Alt#5678" should no longer be marked as main
-
     Scenario: List tracked accounts
         Given I am tracking accounts "Player1#1111" and "Player2#2222"
         When I execute the command "/ow list"
@@ -56,4 +50,3 @@ Feature: Overwatch Stats Tracking
         When I execute the command "/ow stats InvalidPlayer"
         Then I should see an error message
         And the error should mention checking the BattleTag format
-

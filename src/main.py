@@ -13,8 +13,9 @@ from typing import AsyncGenerator
 import uvicorn
 from fastapi import FastAPI
 
-from src.bot import create_bot
+from src.bot import create_bot, get_bot_token
 from src.config.logging import get_logger, setup_logging
+from src.config.secrets import get_secrets
 from src.config.settings import get_settings
 
 logger = get_logger(__name__)
@@ -31,15 +32,24 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     
     settings = get_settings()
     
-    logger.info("Starting Mr. Swede bot...")
+    logger.info(
+        "Starting Mr. Swede bot...",
+        bot_name=settings.discord_bot_name,
+        environment=settings.environment,
+    )
+    
+    # Get the bot token
+    try:
+        token = get_bot_token()
+    except ValueError as e:
+        logger.error("Failed to get bot token", error=str(e))
+        raise
     
     # Create and start the bot
     _bot = create_bot()
     
     # Start bot in background task
-    bot_task = asyncio.create_task(
-        _bot.start(settings.discord_token.get_secret_value())
-    )
+    bot_task = asyncio.create_task(_bot.start(token))
     
     yield
     
@@ -65,7 +75,12 @@ app = FastAPI(
 @app.get("/")
 async def root() -> dict:
     """Root endpoint."""
-    return {"status": "ok", "service": "mr-swede"}
+    settings = get_settings()
+    return {
+        "status": "ok",
+        "service": "mr-swede",
+        "bot_name": settings.discord_bot_name,
+    }
 
 
 @app.get("/health")
@@ -107,11 +122,22 @@ def main() -> None:
     setup_logging()
     settings = get_settings()
     
+    # Validate secrets are available
+    secrets = get_secrets(discord_bot_name=settings.discord_bot_name)
+    if not secrets.discord:
+        logger.error(
+            "Discord secrets not found",
+            bot_name=settings.discord_bot_name,
+            hint="Check GSM configuration or set DISCORD_TOKEN env var",
+        )
+        sys.exit(1)
+    
     logger.info(
         "Starting server",
         host=settings.host,
         port=settings.port,
         environment=settings.environment,
+        bot_name=settings.discord_bot_name,
     )
     
     # Run with uvicorn
@@ -131,6 +157,13 @@ def run_bot_only() -> None:
     setup_logging()
     settings = get_settings()
     
+    # Get the bot token
+    try:
+        token = get_bot_token()
+    except ValueError as e:
+        logger.error("Failed to get bot token", error=str(e))
+        sys.exit(1)
+    
     bot = create_bot()
     
     # Handle graceful shutdown
@@ -142,8 +175,11 @@ def run_bot_only() -> None:
     signal.signal(signal.SIGINT, handle_shutdown)
     signal.signal(signal.SIGTERM, handle_shutdown)
     
-    logger.info("Starting bot (standalone mode)")
-    bot.run(settings.discord_token.get_secret_value())
+    logger.info(
+        "Starting bot (standalone mode)",
+        bot_name=settings.discord_bot_name,
+    )
+    bot.run(token)
 
 
 if __name__ == "__main__":
@@ -152,4 +188,3 @@ if __name__ == "__main__":
         run_bot_only()
     else:
         main()
-

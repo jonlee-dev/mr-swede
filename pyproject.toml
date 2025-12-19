@@ -7,7 +7,7 @@ readme = "README.md"
 packages = [{include = "src"}]
 
 [tool.poetry.dependencies]
-python = "^3.11"
+python = "^3.12"
 # Discord
 "discord.py" = {extras = ["voice"], version = "^2.3.2"}
 # Web framework for Cloud Run health checks
@@ -65,7 +65,7 @@ markers = [
 
 [tool.ruff]
 line-length = 100
-target-version = "py311"
+target-version = "py312"
 select = [
     "E",   # pycodestyle errors
     "W",   # pycodestyle warnings
@@ -83,7 +83,7 @@ ignore = ["E501"]
 known-first-party = ["src"]
 
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.12"
 warn_return_any = true
 warn_unused_ignores = true
 disallow_untyped_defs = true

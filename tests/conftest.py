@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from discord.ext import commands
 
+from src.config.secrets import AppSecrets, BlizzardSecrets, DiscordBotSecrets, SpotifySecrets
 from src.config.settings import Settings
 from src.database.models import Account, CompetitiveStats, RankInfo
 
@@ -30,22 +31,38 @@ def mock_settings() -> Settings:
         environment="test",
         debug=True,
         gcp_project_id="test-project",
-        use_gsm=False,
-        discord_token="test-token",
-        discord_application_id="123456789",
+        discord_bot_name="mr-swede",
         discord_guild_id="987654321",
-        blizzard_client_id="test-blizzard-id",
-        blizzard_client_secret="test-blizzard-secret",
-        spotify_client_id="test-spotify-id",
-        spotify_client_secret="test-spotify-secret",
+        blizzard_region="us",
     )
 
 
 @pytest.fixture
-def mock_settings_patch(mock_settings: Settings):
-    """Patch get_settings to return mock settings."""
-    with patch("src.config.settings.get_settings", return_value=mock_settings):
-        yield mock_settings
+def mock_secrets() -> AppSecrets:
+    """Create mock secrets for testing."""
+    return AppSecrets(
+        blizzard=BlizzardSecrets(
+            client_id="test-blizzard-id",
+            client_secret="test-blizzard-secret",
+        ),
+        discord=DiscordBotSecrets(
+            id="123456789",
+            token="test-discord-token",
+            public_key="test-public-key",
+        ),
+        spotify=SpotifySecrets(
+            client_id="test-spotify-id",
+            client_secret="test-spotify-secret",
+        ),
+    )
+
+
+@pytest.fixture
+def mock_settings_and_secrets(mock_settings: Settings, mock_secrets: AppSecrets):
+    """Patch both settings and secrets."""
+    with patch("src.config.settings.get_settings", return_value=mock_settings), \
+         patch("src.config.secrets.get_secrets", return_value=mock_secrets):
+        yield mock_settings, mock_secrets
 
 
 # ==================== Discord Fixtures ====================
@@ -199,4 +216,3 @@ def mock_httpx_client() -> AsyncMock:
     client.post = AsyncMock()
     client.is_closed = False
     return client
-

@@ -2,7 +2,7 @@
 # Multi-stage build for smaller image size
 
 # ==================== Builder Stage ====================
-FROM python:3.11-slim as builder
+FROM python:3.12-slim as builder
 
 # Install build dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -26,7 +26,7 @@ COPY pyproject.toml poetry.lock* ./
 RUN poetry export -f requirements.txt --output requirements.txt --without-hashes
 
 # ==================== Runtime Stage ====================
-FROM python:3.11-slim as runtime
+FROM python:3.12-slim as runtime
 
 # Install runtime dependencies (FFmpeg for audio playback)
 RUN apt-get update && apt-get install -y --no-install-recommends \

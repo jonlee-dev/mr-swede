@@ -8,29 +8,12 @@ from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
-def get_secret_from_gsm(secret_name: str, project_id: str) -> str | None:
-    """Fetch a secret from Google Secret Manager.
-    
-    Args:
-        secret_name: Name of the secret in GSM
-        project_id: GCP project ID
-        
-    Returns:
-        The secret value or None if not found/error
-    """
-    try:
-        from google.cloud import secretmanager
-        
-        client = secretmanager.SecretManagerServiceClient()
-        name = f"projects/{project_id}/secrets/{secret_name}/versions/latest"
-        response = client.access_secret_version(request={"name": name})
-        return response.payload.data.decode("UTF-8")
-    except Exception:
-        return None
-
-
 class Settings(BaseSettings):
-    """Application settings loaded from environment or Google Secret Manager."""
+    """Application settings loaded from environment.
+    
+    Note: Secrets are loaded separately via the SecretManager class.
+    This class handles non-secret configuration.
+    """
     
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -44,22 +27,20 @@ class Settings(BaseSettings):
     debug: bool = Field(default=False)
     
     # GCP Settings
-    gcp_project_id: str = Field(default="", alias="GCP_PROJECT_ID")
-    use_gsm: bool = Field(default=True, description="Use Google Secret Manager for secrets")
+    gcp_project_id: str = Field(default="749144818572", alias="GCP_PROJECT_ID")
     
-    # Discord
-    discord_token: SecretStr = Field(default=SecretStr(""), alias="DISCORD_TOKEN")
-    discord_application_id: str = Field(default="", alias="DISCORD_APPLICATION_ID")
+    # Discord bot selection (which bot from discord-bot-secrets to use)
+    discord_bot_name: str = Field(
+        default="mr-swede",
+        alias="DISCORD_BOT_NAME",
+        description="Which Discord bot to use: 'mr-swede' or 'ow2-ranked-bot'"
+    )
     discord_guild_id: str = Field(default="", alias="DISCORD_GUILD_ID")
     
-    # Blizzard/Battle.net API
-    blizzard_client_id: str = Field(default="", alias="BLIZZARD_CLIENT_ID")
-    blizzard_client_secret: SecretStr = Field(default=SecretStr(""), alias="BLIZZARD_CLIENT_SECRET")
+    # Blizzard API settings
     blizzard_region: str = Field(default="us", alias="BLIZZARD_REGION")
     
-    # Spotify API
-    spotify_client_id: str = Field(default="", alias="SPOTIFY_CLIENT_ID")
-    spotify_client_secret: SecretStr = Field(default=SecretStr(""), alias="SPOTIFY_CLIENT_SECRET")
+    # Spotify settings
     spotify_redirect_uri: str = Field(
         default="http://localhost:8080/callback", 
         alias="SPOTIFY_REDIRECT_URI"
@@ -79,45 +60,35 @@ class Settings(BaseSettings):
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
     log_format: str = Field(default="json", alias="LOG_FORMAT")
     
+    # Legacy environment variable support (for local dev without GSM)
+    # These are optional and only used if GSM is not available
+    discord_token: SecretStr | None = Field(default=None, alias="DISCORD_TOKEN")
+    discord_application_id: str | None = Field(default=None, alias="DISCORD_APPLICATION_ID")
+    blizzard_client_id: str | None = Field(default=None, alias="BLIZZARD_CLIENT_ID")
+    blizzard_client_secret: SecretStr | None = Field(default=None, alias="BLIZZARD_CLIENT_SECRET")
+    spotify_client_id: str | None = Field(default=None, alias="SPOTIFY_CLIENT_ID")
+    spotify_client_secret: SecretStr | None = Field(default=None, alias="SPOTIFY_CLIENT_SECRET")
+    
     @model_validator(mode="before")
     @classmethod
-    def load_secrets_from_gsm(cls, data: dict[str, Any]) -> dict[str, Any]:
-        """Load secrets from Google Secret Manager if configured."""
-        # Check if we should use GSM
-        use_gsm = data.get("use_gsm", data.get("USE_GSM", True))
-        gcp_project_id = data.get("gcp_project_id", data.get("GCP_PROJECT_ID", ""))
-        
-        # In Cloud Run, project ID is available via metadata
-        if not gcp_project_id:
-            gcp_project_id = os.environ.get("GOOGLE_CLOUD_PROJECT", "")
-            if gcp_project_id:
-                data["gcp_project_id"] = gcp_project_id
-        
-        if not use_gsm or not gcp_project_id:
-            return data
-        
-        # Map of settings to GSM secret names
-        secret_mappings = {
-            "discord_token": "discord-token",
-            "blizzard_client_id": "blizzard-client-id",
-            "blizzard_client_secret": "blizzard-client-secret",
-            "spotify_client_id": "spotify-client-id",
-            "spotify_client_secret": "spotify-client-secret",
-        }
-        
-        for setting_key, secret_name in secret_mappings.items():
-            # Only fetch from GSM if not already set
-            if not data.get(setting_key) and not os.environ.get(setting_key.upper()):
-                secret_value = get_secret_from_gsm(secret_name, gcp_project_id)
-                if secret_value:
-                    data[setting_key] = secret_value
-        
+    def detect_gcp_project(cls, data: dict[str, Any]) -> dict[str, Any]:
+        """Auto-detect GCP project ID in Cloud Run environment."""
+        if not data.get("gcp_project_id") and not os.environ.get("GCP_PROJECT_ID"):
+            # Cloud Run sets GOOGLE_CLOUD_PROJECT
+            gcp_project = os.environ.get("GOOGLE_CLOUD_PROJECT", "")
+            if gcp_project:
+                data["gcp_project_id"] = gcp_project
         return data
     
     @property
     def is_production(self) -> bool:
         """Check if running in production environment."""
         return self.environment.lower() == "production"
+    
+    @property
+    def is_cloud_run(self) -> bool:
+        """Check if running in Cloud Run."""
+        return bool(os.environ.get("K_SERVICE"))
     
     @property
     def blizzard_token_url(self) -> str:
@@ -134,4 +105,3 @@ class Settings(BaseSettings):
 def get_settings() -> Settings:
     """Get cached settings instance."""
     return Settings()
-

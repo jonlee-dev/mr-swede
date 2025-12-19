@@ -12,6 +12,7 @@ import spotipy
 from spotipy.oauth2 import SpotifyClientCredentials, SpotifyOAuth
 
 from src.config.logging import get_logger
+from src.config.secrets import get_secrets
 from src.config.settings import get_settings
 
 logger = get_logger(__name__)
@@ -34,9 +35,24 @@ class SpotifyClient:
             redirect_uri: OAuth redirect URI
         """
         settings = get_settings()
+        secrets = get_secrets()
         
-        self._client_id = client_id or settings.spotify_client_id
-        self._client_secret = client_secret or settings.spotify_client_secret.get_secret_value()
+        # Get credentials from secrets or parameters
+        if client_id and client_secret:
+            self._client_id = client_id
+            self._client_secret = client_secret
+        elif secrets.spotify:
+            self._client_id = secrets.spotify.client_id
+            self._client_secret = secrets.spotify.client_secret
+        elif settings.spotify_client_id and settings.spotify_client_secret:
+            self._client_id = settings.spotify_client_id
+            self._client_secret = settings.spotify_client_secret.get_secret_value()
+        else:
+            raise ValueError(
+                "Spotify credentials not found. "
+                "Configure in GSM or set SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET env vars."
+            )
+        
         self._redirect_uri = redirect_uri or settings.spotify_redirect_uri
         
         # Client credentials flow (no user auth needed)
@@ -297,3 +313,15 @@ class SpotifyClient:
         artists = " ".join(track["artists"][:2])
         return f"{artists} {track['name']} audio"
 
+
+def get_spotify_client() -> SpotifyClient | None:
+    """Get a Spotify client if credentials are available.
+    
+    Returns:
+        SpotifyClient or None if credentials not configured
+    """
+    try:
+        return SpotifyClient()
+    except ValueError:
+        logger.warning("Spotify client not available - credentials not configured")
+        return None

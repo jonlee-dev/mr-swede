@@ -9,7 +9,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from src.config.logging import get_logger
-from src.services import SpotifyClient, YouTubeAudioClient
+from src.services import YouTubeAudioClient, get_spotify_client
 from src.services.youtube import AudioTrack
 
 logger = get_logger(__name__)
@@ -66,8 +66,11 @@ class MusicCog(commands.Cog, name="Music"):
         """
         self.bot = bot
         self.youtube = YouTubeAudioClient()
-        self.spotify = SpotifyClient()
+        self.spotify = get_spotify_client()  # May be None if not configured
         self.queues: dict[int, MusicQueue] = {}  # guild_id -> queue
+        
+        if not self.spotify:
+            logger.warning("Spotify client not available - Spotify URL support disabled")
     
     def get_queue(self, guild_id: int) -> MusicQueue:
         """Get or create a queue for a guild."""
@@ -78,7 +81,7 @@ class MusicCog(commands.Cog, name="Music"):
     @commands.Cog.listener()
     async def on_ready(self) -> None:
         """Handle bot ready event."""
-        logger.info("MusicCog ready")
+        logger.info("MusicCog ready", spotify_enabled=self.spotify is not None)
     
     @commands.Cog.listener()
     async def on_voice_state_update(
@@ -140,8 +143,8 @@ class MusicCog(commands.Cog, name="Music"):
             elif voice_client.channel != voice_channel:
                 await voice_client.move_to(voice_channel)
             
-            # Handle Spotify URLs
-            if "spotify.com" in query or query.startswith("spotify:"):
+            # Handle Spotify URLs (only if Spotify client is available)
+            if self.spotify and ("spotify.com" in query or query.startswith("spotify:")):
                 parsed = self.spotify.parse_spotify_url(query)
                 if parsed:
                     item_type, item_id = parsed
@@ -274,6 +277,15 @@ class MusicCog(commands.Cog, name="Music"):
         voice_client: discord.VoiceClient,
     ) -> None:
         """Handle Spotify playlist."""
+        if not self.spotify:
+            embed = discord.Embed(
+                title="❌ Spotify Not Configured",
+                description="Spotify support is not available.",
+                color=discord.Color.red(),
+            )
+            await interaction.followup.send(embed=embed)
+            return
+        
         tracks = await self.spotify.get_playlist_tracks(playlist_id, limit=25)
         
         if not tracks:
@@ -531,4 +543,3 @@ async def setup(bot: commands.Bot) -> None:
         bot: Discord bot instance
     """
     await bot.add_cog(MusicCog(bot))
-
