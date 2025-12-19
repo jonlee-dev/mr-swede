@@ -39,6 +39,13 @@ This release introduces a robust secrets management system using Google Secret M
 - **event_loop fixture deprecation** — Removed custom pytest event_loop fixture, using pytest-asyncio's built-in handling
 - **Test warnings** — Suppressed library warnings from discord.py (audioop) and pytest-bdd (usefixtures) in pyproject.toml
 
+### Documentation
+
+- **User interaction guide** — New README section explaining how to use slash commands
+- **Environment variables** — Reorganized into logical groups (Core, Discord, GCP, Local Dev)
+- **GSM secrets structure** — Added JSON examples and secret structure diagrams
+- **Architecture diagram** — Added `secrets.py` and `env.example` to file tree
+
 ### Technical Details
 
 #### Secrets Architecture

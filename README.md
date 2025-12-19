@@ -91,6 +91,89 @@ open htmlcov/index.html
 
 ---
 
+## 💬 Interacting with Mr. Swede
+
+Mr. Swede uses Discord's modern **Slash Commands** system. Here's everything you need to know about interacting with the bot.
+
+### How Slash Commands Work
+
+Instead of typing a prefix like `$` or `!`, you interact with Mr. Swede by typing `/` in any text channel where the bot has permissions.
+
+#### Discovering Commands
+
+1. **Type `/`** in any text channel
+2. **Look for Mr. Swede** in the command menu that appears
+3. **Browse available commands** — Discord shows all commands with descriptions
+4. **Click or type** to select a command
+
+#### Using Parameters
+
+Many commands accept parameters (arguments). Discord guides you through them:
+
+```
+/ow stats battletag:Player#1234
+         ↑
+         Parameter name shown, type your value after the colon
+```
+
+**Example interactions:**
+
+| What you type | What happens |
+|---------------|--------------|
+| `/ping` | Bot responds with latency |
+| `/ow stats Player#1234` | Shows competitive ranks for that player |
+| `/play never gonna give you up` | Searches YouTube and plays the song |
+| `/volume 50` | Sets playback volume to 50% |
+
+#### Autocomplete
+
+Some commands offer **autocomplete suggestions** as you type:
+
+- `/help` → Shows category choices: `Overwatch`, `Music`, `General`
+- `/loop` → Shows mode choices: `off`, `single`, `queue`
+
+### Response Types
+
+Mr. Swede responds in different ways depending on the command:
+
+| Response Type | Description | Example |
+|---------------|-------------|---------|
+| **Embed** | Rich formatted message with colors and fields | Stats display, queue list |
+| **Ephemeral** | Only visible to you (disappears for others) | Invite link, error messages |
+| **Public** | Visible to everyone in the channel | Now playing announcements |
+
+### Voice Channel Interaction
+
+For music commands, you need to be in a voice channel:
+
+1. **Join a voice channel** in your Discord server
+2. **Use `/play`** — the bot will join your channel automatically
+3. **Control playback** with `/pause`, `/skip`, `/stop`, etc.
+4. **Bot auto-disconnects** after 60 seconds of inactivity
+
+> **Tip:** The bot joins *your* voice channel. If you want it in a different channel, join that channel first, then use `/play`.
+
+### Permissions
+
+Commands work based on your Discord permissions:
+
+| Requirement | Commands Affected |
+|-------------|-------------------|
+| Be in a voice channel | All music commands |
+| Same voice channel as bot | `/skip`, `/stop`, `/pause`, `/resume` |
+| Server member | All commands (no DM support) |
+
+### Getting Help In-Discord
+
+Don't remember a command? Use the built-in help:
+
+- **`/help`** — Shows all command categories
+- **`/help overwatch`** — Shows only Overwatch commands  
+- **`/help music`** — Shows only music commands
+- **`/info`** — General bot information
+
+---
+
 ## 📖 Commands
 
 ### Overwatch Commands
