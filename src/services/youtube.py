@@ -377,8 +377,12 @@ class YouTubeAudioClient:
         
         is_url = url_or_query.startswith(("http://", "https://"))
         
-        def _flat_search(query: str) -> str | None:
-            """Phase 1: Fast flat search to get video URL only."""
+        def _flat_search(query: str) -> tuple[str | None, dict[str, Any]]:
+            """Phase 1: Fast flat search to get video URL and basic info.
+            
+            Returns:
+                Tuple of (video_url, search_result_info)
+            """
             global _ytdl_options
             
             # Use options with extract_flat for fast search
@@ -390,7 +394,7 @@ class YouTubeAudioClient:
             
             try:
                 with yt_dlp.YoutubeDL(flat_opts) as ydl:
-                    logger.info("🔍 Phase 1: Flat search starting...", query=query)
+                    logger.info("🔍 Phase 1: Searching YouTube...", query=query)
                     search_start = time.time()
                     
                     info = ydl.extract_info(f"ytsearch1:{query}", download=False)
@@ -399,17 +403,17 @@ class YouTubeAudioClient:
                     
                     if not info:
                         logger.warning("🔍 Phase 1: Search returned None", query=query)
-                        return None
+                        return None, {}
                     
                     entries = info.get("entries", [])
                     if not entries:
-                        logger.warning("🔍 Phase 1: No results", query=query)
-                        return None
+                        logger.warning("🔍 Phase 1: No results found", query=query)
+                        return None, {}
                     
                     first = entries[0]
                     if not first:
                         logger.warning("🔍 Phase 1: First entry is None", query=query)
-                        return None
+                        return None, {}
                     
                     video_url = first.get("url") or first.get("webpage_url")
                     video_id = first.get("id")
@@ -418,21 +422,26 @@ class YouTubeAudioClient:
                     if not video_url and video_id:
                         video_url = f"https://www.youtube.com/watch?v={video_id}"
                     
+                    # Log the search result clearly
                     logger.info(
-                        "✅ Phase 1: Got video URL",
+                        "🎯 SEARCH RESULT",
                         query=query,
-                        video_id=video_id,
                         title=first.get("title"),
+                        channel=first.get("channel") or first.get("uploader"),
+                        video_id=video_id,
+                        duration=first.get("duration"),
+                        view_count=first.get("view_count"),
+                        url=video_url,
                         search_ms=round(search_elapsed * 1000),
                     )
                     
-                    return video_url
+                    return video_url, first
             except Exception as e:
                 logger.error("❌ Phase 1: Search failed", query=query, error=str(e)[:200])
-                return None
+                return None, {}
         
         def _extract_url(url: str) -> dict[str, Any] | None:
-            """Phase 2: Extract audio info from URL."""
+            """Phase 2: Extract full audio info from URL."""
             global _ytdl_instance
             
             try:
@@ -444,19 +453,34 @@ class YouTubeAudioClient:
                     _init_ytdl_sync()
                     ydl = _ytdl_instance
                 
-                logger.info("🎬 Phase 2: Extracting audio info...", url=url[:60])
+                logger.info("🎬 Phase 2: Extracting full metadata...", url=url[:60])
                 extract_start = time.time()
                 
                 info = ydl.extract_info(url, download=False)
                 
                 extract_elapsed = time.time() - extract_start
-                logger.info(
-                    "✅ Phase 2: Extraction complete",
-                    title=info.get("title") if info else None,
-                    extract_ms=round(extract_elapsed * 1000),
-                    has_url="url" in info if info else False,
-                    format_count=len(info.get("formats", [])) if info else 0,
-                )
+                
+                if info:
+                    # Get audio format info
+                    formats = info.get("formats", [])
+                    audio_formats = [f for f in formats if f.get("acodec") != "none"]
+                    
+                    # Log detailed metadata
+                    logger.info(
+                        "📋 EXTRACTED METADATA",
+                        title=info.get("title"),
+                        channel=info.get("channel") or info.get("uploader"),
+                        duration_seconds=info.get("duration"),
+                        view_count=info.get("view_count"),
+                        upload_date=info.get("upload_date"),
+                        video_id=info.get("id"),
+                        total_formats=len(formats),
+                        audio_formats=len(audio_formats),
+                        has_direct_url="url" in info,
+                        extract_ms=round(extract_elapsed * 1000),
+                    )
+                else:
+                    logger.warning("⚠️ Phase 2: No info returned", url=url[:60])
                 
                 return info
             except Exception as e:
@@ -469,11 +493,11 @@ class YouTubeAudioClient:
             try:
                 if not is_url:
                     # Two-phase search: flat search first, then extract
-                    video_url = _flat_search(url_or_query)
+                    video_url, search_result = _flat_search(url_or_query)
                     if not video_url:
                         return None
                     
-                    # Now extract from the URL
+                    # Now extract full metadata from the URL
                     info = _extract_url(video_url)
                     
                     total_elapsed = time.time() - extract_start
