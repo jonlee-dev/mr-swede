@@ -72,3 +72,23 @@ cookies.txt
 
 # Jupyter
 .ipynb_checkpoints/
+
+# Terraform
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+terraform.tfvars
+*.auto.tfvars
+
+# Google Cloud credentials
+*.keyfile.json
+gcp-*.json
+service-account-*.json
