@@ -5,6 +5,57 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.0] - 2026-04-26
+
+### Pivot to Valheim-only scope
+
+This release strips the bot down to what actually works and rebuilds it
+around a single use case: a Discord-controlled, on-demand Valheim server.
+Net diff: **+980 / −7,477 lines** across 46 files.
+
+### Removed
+
+- **Overwatch stat tracking** — `cogs/overwatch.py`, `services/overfast.py`, `services/blizzard.py`, all related tests, and the Blizzard/Overfast secret types. Feature didn't work reliably (Overfast rate-limiting + 429s on Cloud Run shared egress IPs).
+- **Music playback** — `cogs/music.py`, `services/youtube.py`, `services/spotify.py`, `services/music_player.py`, voice intents, FFmpeg dep in the Dockerfile, and the yt-dlp / spotipy / PyNaCl deps.
+- **Firestore** — entire `database/` package. The bot is stateless again; Phase-3 state (if any) goes in GSM or VM-side files.
+- **Slash commands** — `/help`, `/invite` (rarely used; Discord's built-in `/` discovery does the same job).
+- **Test scaffolding** — `pytest-bdd` + `acceptance/` Gherkin features, `factory-boy`, `hypothesis`, `aioresponses`. Unit tests + (eventual) integration tests are the new line.
+
+### Added
+
+- **`/valheim status|start|stop`** as a `commands.GroupCog` in `cogs/valheim.py`. Returns "Not implemented yet" until Phase 3 wires it.
+- **`services/compute.py`** — `InstanceState` dataclass + `describe_instance`/`start_instance`/`stop_instance` stubs. Public surface is three free functions to keep a future provider swap cheap.
+- **`services/server_query.py`** — `GameState` dataclass + `query(host, port)` stub. Phase 3 will use `python-a2s` against Valheim's Steam query port (game_port + 1).
+- **`http.py`** — FastAPI app with a lifespan that boots Discord *after* uvicorn binds, so Cloud Run health checks pass during the connect window.
+
+### Changed
+
+- **`main.py`** is now ~25 lines — just configure logging and run uvicorn. Discord state lives in `bot.py` + `http.py`.
+- **`bot.py`** uses `Intents.default()` only. Privileged intents (members, presences, message_content) are off in code *and* in the Discord developer portal.
+- **`/info`** lists the three Valheim subcommands plus `/ping` itself; `__version__` bumped to `3.0.0`.
+- **`secrets.py`** — pruned to `DiscordBotSecrets` + `AppSecrets`. Both nested-object (`{"mr-swede": {"token": ...}}`) and dot-notation (`{"mr-swede.token": ...}`) GSM layouts still work.
+- **`settings.py`** — added `valheim_zone`, `valheim_instance_name`. Removed `blizzard_*`, `spotify_*`, `firestore_*`.
+- **`README.md`** (root + `bot/`), **`TODO.md`**, **`docs/architecture.md`** — refreshed for the new scope.
+- **`Dockerfile`** — dropped FFmpeg + `libffi-dev`. Multi-stage poetry-export → pip preserved.
+- **`pyproject.toml`** — version `3.0.0`. Pinned `ruff = "^0.1.13"` to match CI. `google-cloud-compute` and `python-a2s` are commented out, ready to uncomment in Phase 3.
+
+### Migration
+
+There's no migration path from 2.x — if you were using Overwatch tracking
+or music playback, this release deletes them. Pin to `2.1.12` if you
+need them back.
+
+### Why
+
+Most of the 2.x features didn't work in production: Overwatch via
+Cloud Run shared egress hit Overfast rate limits constantly, and music
+playback over a Cloud Run-hosted bot has chronic websocket-latency
+problems (see all the 2.1.x perf entries below). Rather than keep
+patching, we pruned. The Valheim use case is what the repo's actually
+for now.
+
+---
+
 ## [2.1.12] - 2024-12-19
 
 ### 🔧 Pre-Initialize BOTH yt-dlp Instances

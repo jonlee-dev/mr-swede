@@ -1,334 +1,114 @@
-# 🇸🇪 Mr. Swede
+# Mr. Swede
 
 [![CI](https://github.com/jonlee-dev/mr-swede/actions/workflows/ci.yaml/badge.svg)](https://github.com/jonlee-dev/mr-swede/actions/workflows/ci.yaml)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
 [![Discord.py](https://img.shields.io/badge/discord.py-2.3+-blue.svg)](https://discordpy.readthedocs.io/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-A Swiss-army-knife Discord bot for Overwatch stats tracking and music playback, designed for serverless deployment on Google Cloud Run. Also home to the IaC and runtime files for an on-demand Valheim server (Discord-controlled).
+A Discord bot that controls an on-demand Valheim server. Runs on Cloud Run; the game server runs on GCE and only spins up when someone asks for it. Repo also contains the Terraform that builds the VM and the runtime files that live inside it.
+
+> **History.** This bot used to track Overwatch stats and play music. Both features are gone — see [CHANGELOG.md](./CHANGELOG.md) v3.0.0 for the prune. The current scope is `/valheim status|start|stop` only.
 
 ---
 
-## 📂 Repository layout
+## Repository layout
 
 | Path | Contents |
 |---|---|
-| [`bot/`](bot/) | Python (discord.py) bot — music, Overwatch, and (WIP) Valheim cogs. Runs on Cloud Run. |
-| [`infra/`](infra/) | Terraform for all GCP resources (bot, VM, backups, idle watcher). |
+| [`bot/`](bot/) | Python (discord.py) bot — Cloud Run service. Slash-only. |
+| [`infra/`](infra/) | Terraform for all GCP resources (bot runtime, Valheim VM, backups, idle watcher). |
 | [`server/`](server/) | Files that run *inside* the Valheim VM — docker-compose, cloud-init, ops scripts. |
-| [`docs/`](docs/) | Architecture notes, runbooks, bootstrap procedure. |
+| [`docs/`](docs/) | Architecture diagram, bootstrap procedure, runbook. |
 
-**The Quick Start commands below assume you are inside `bot/`.** All bot-related Poetry / pytest / Docker commands run from there. Terraform commands run from `infra/envs/prod/`.
-
----
-
-## ✨ Features
-
-### 🎮 Overwatch Stats Tracking
-- **Multi-account support** — Track your main and all your alt accounts
-- **Competitive rank tracking** — View ranks for Tank, Damage, and Support roles
-- **Historical stats** — Track your progress over time with Firestore
-- **Server leaderboard** — See who's climbing the ranks
-- Powered by [Overfast API](https://overfast-api.tekrop.fr/) for reliable data
-
-### 🎵 Music Playback
-- **YouTube & Spotify** — Play from URLs or search queries
-- **Queue management** — Add, skip, shuffle, and loop tracks
-- **Volume control** — Fine-tune your listening experience
-- **Auto-disconnect** — Saves resources when inactive
-
-### ☁️ Cloud-Native Design
-- **Serverless** — Runs on Cloud Run, scales to zero when idle
-- **Secure secrets** — Credentials managed by Google Secret Manager
-- **Persistent storage** — Firestore for account data and stats history
-- **Health checks** — Built-in `/health` endpoint for monitoring
+Bot-related Poetry / pytest / Docker commands run from inside [`bot/`](bot/). Terraform commands run from `infra/envs/prod/`.
 
 ---
 
-## 🚀 Quick Start
+## Phase status
 
-### Prerequisites
+| Phase | What | Status |
+|---|---|---|
+| 0 | Repo reorg into `bot/` + `infra/` | done |
+| 0.5 | One-time Terraform bootstrap (WIF + state bucket) | done |
+| 1 | Valheim VM + cloud-init + Secret Manager (Terraform) | done |
+| 2 | Bot prune (kill OW/music/Firestore) + Phase-3 scaffolds | done |
+| 3 | Wire `/valheim status\|start\|stop` to GCE + A2S | next |
+| 7 | Idle watcher (Cloud Function or scheduled job) | future |
 
-- Python 3.12+
-- [Poetry](https://python-poetry.org/) for dependency management
-- FFmpeg for audio playback
-- A Discord bot token ([setup guide](./TODO.md#-discord-developer-portal-setup))
+See [TODO.md](./TODO.md) for the manual setup checklist (Discord developer portal, GCP IAM, Cloud Run deploy command).
 
-### Installation
+---
+
+## Commands
+
+| Command | Status | Description |
+|---|---|---|
+| `/ping` | implemented | Latency check |
+| `/info` | implemented | Bot version + loaded cog list |
+| `/valheim status` | scaffolded | Show VM state and player count (Phase 3) |
+| `/valheim start` | scaffolded | Start the Valheim VM (Phase 3) |
+| `/valheim stop` | scaffolded | Stop the Valheim VM (Phase 3) |
+
+The `/valheim` commands return "Not implemented yet" until Phase 3 wires them to [`bot/src/services/compute.py`](bot/src/services/compute.py) and [`bot/src/services/server_query.py`](bot/src/services/server_query.py).
+
+---
+
+## Quick start (local development)
 
 ```bash
-# Clone the repository
 git clone https://github.com/jonlee-dev/mr-swede.git
 cd mr-swede/bot
 
-# Install Poetry (if needed)
-curl -sSL https://install.python-poetry.org | python3 -
-
-# Install dependencies
 poetry install
+cp env.example .env                       # edit DISCORD_TOKEN if no GSM access
+gcloud auth application-default login     # for GSM lookups (skip if using DISCORD_TOKEN)
 
-# Configure environment
-cp env.example .env
-# Edit .env with your credentials (see TODO.md for details)
+poetry run python -m src.main
 ```
 
-### Running Locally
+The bot starts a FastAPI server on port 8080 (for Cloud Run health checks) and connects to Discord in the background. If you don't have GSM access, set `DISCORD_TOKEN` in `bot/.env` to bypass GSM entirely.
+
+### Running tests
 
 ```bash
-# Activate virtual environment
-poetry shell
-
-# Run the bot (standalone mode, no HTTP server)
-python -m src.main --standalone
-
-# Or run with HTTP health check server (like Cloud Run)
-python -m src.main
+cd bot
+poetry run pytest                     # all tests
+poetry run pytest tests/unit -v       # unit tests only
+poetry run pytest --cov=src           # with coverage
 ```
 
-### Running Tests
+### Code quality
 
 ```bash
-# All tests with coverage
-poetry run pytest
-
-# Unit tests only (fast)
-poetry run pytest tests/unit -v
-
-# Acceptance tests (ATDD)
-poetry run pytest tests/acceptance -v
-
-# Generate HTML coverage report
-poetry run pytest --cov=src --cov-report=html
-open htmlcov/index.html
+cd bot
+poetry run ruff check src tests       # lint
+poetry run ruff format src tests      # format
+poetry run mypy src                   # type check
 ```
 
 ---
 
-## 💬 Interacting with Mr. Swede
+## Deployment
 
-Mr. Swede uses Discord's modern **Slash Commands** system. Here's everything you need to know about interacting with the bot.
-
-### How Slash Commands Work
-
-Instead of typing a prefix like `$` or `!`, you interact with Mr. Swede by typing `/` in any text channel where the bot has permissions.
-
-#### Discovering Commands
-
-1. **Type `/`** in any text channel
-2. **Look for Mr. Swede** in the command menu that appears
-3. **Browse available commands** — Discord shows all commands with descriptions
-4. **Click or type** to select a command
-
-#### Using Parameters
-
-Many commands accept parameters (arguments). Discord guides you through them:
-
-```
-/ow stats battletag:Player#1234
-         ↑
-         Parameter name shown, type your value after the colon
-```
-
-**Example interactions:**
-
-| What you type | What happens |
-|---------------|--------------|
-| `/ping` | Bot responds with latency |
-| `/ow stats Player#1234` | Shows competitive ranks for that player |
-| `/play never gonna give you up` | Searches YouTube and plays the song |
-| `/volume 50` | Sets playback volume to 50% |
-
-#### Autocomplete
-
-Some commands offer **autocomplete suggestions** as you type:
-
-- `/help` → Shows category choices: `Overwatch`, `Music`, `General`
-- `/loop` → Shows mode choices: `off`, `single`, `queue`
-
-### Response Types
-
-Mr. Swede responds in different ways depending on the command:
-
-| Response Type | Description | Example |
-|---------------|-------------|---------|
-| **Embed** | Rich formatted message with colors and fields | Stats display, queue list |
-| **Ephemeral** | Only visible to you (disappears for others) | Invite link, error messages |
-| **Public** | Visible to everyone in the channel | Now playing announcements |
-
-### Voice Channel Interaction
-
-For music commands, you need to be in a voice channel:
-
-1. **Join a voice channel** in your Discord server
-2. **Use `/play`** — the bot will join your channel automatically
-3. **Control playback** with `/pause`, `/skip`, `/stop`, etc.
-4. **Bot auto-disconnects** after 60 seconds of inactivity
-
-> **Tip:** The bot joins *your* voice channel. If you want it in a different channel, join that channel first, then use `/play`.
-
-### Permissions
-
-Commands work based on your Discord permissions:
-
-| Requirement | Commands Affected |
-|-------------|-------------------|
-| Be in a voice channel | All music commands |
-| Same voice channel as bot | `/skip`, `/stop`, `/pause`, `/resume` |
-| Server member | All commands (no DM support) |
-
-### Getting Help In-Discord
-
-Don't remember a command? Use the built-in help:
-
-- **`/help`** — Shows all command categories
-- **`/help overwatch`** — Shows only Overwatch commands  
-- **`/help music`** — Shows only music commands
-- **`/info`** — General bot information
-
----
-
-## 📖 Commands
-
-### Overwatch Commands
-
-| Command | Description |
-|---------|-------------|
-| `/ow stats <battletag>` | View player competitive stats |
-| `/ow track <battletag>` | Start tracking an account |
-| `/ow untrack <battletag>` | Stop tracking an account |
-| `/ow list` | List your tracked accounts |
-| `/ow refresh` | Refresh stats for all your accounts |
-| `/ow leaderboard` | Show server ranking leaderboard |
-
-### Music Commands
-
-| Command | Description |
-|---------|-------------|
-| `/play <query>` | Play a song or add to queue |
-| `/pause` | Pause playback |
-| `/resume` | Resume playback |
-| `/skip` | Skip to next track |
-| `/stop` | Stop and clear the queue |
-| `/queue` | Show current queue |
-| `/nowplaying` | Show current track info |
-| `/volume <0-100>` | Set playback volume |
-| `/loop <off\|single\|queue>` | Set loop mode |
-| `/shuffle` | Shuffle the queue |
-| `/leave` | Disconnect from voice channel |
-
-### General Commands
-
-| Command | Description |
-|---------|-------------|
-| `/ping` | Check bot latency |
-| `/help [category]` | Show help information |
-| `/info` | Display bot information |
-| `/invite` | Get bot invite link |
-
----
-
-## 🏗️ Architecture
-
-```
-mr-swede/
-├── bot/                         # Python (discord.py) bot — Cloud Run
-│   ├── src/
-│   │   ├── main.py              # Entry point with FastAPI health check
-│   │   ├── bot.py               # Discord bot setup and configuration
-│   │   ├── config/
-│   │   │   ├── settings.py      # Pydantic settings for non-secret config
-│   │   │   ├── secrets.py       # GSM integration for JSON secrets
-│   │   │   └── logging.py       # Structured logging with structlog
-│   │   ├── cogs/
-│   │   │   ├── general.py       # Utility commands (/ping, /help, etc.)
-│   │   │   ├── overwatch.py     # Overwatch tracking commands
-│   │   │   ├── music.py         # Music playback commands
-│   │   │   └── valheim.py       # (WIP) /valheim slash commands
-│   │   ├── services/
-│   │   │   ├── base.py          # Base HTTP client with retry/error handling
-│   │   │   ├── overfast.py      # Overfast API client
-│   │   │   ├── blizzard.py      # Blizzard Battle.net API client
-│   │   │   ├── spotify.py       # Spotify API client
-│   │   │   ├── youtube.py       # yt-dlp audio extraction
-│   │   │   └── valheim/         # (WIP) cloud/world/query abstractions
-│   │   ├── database/
-│   │   │   ├── models.py        # Pydantic models for Firestore
-│   │   │   └── firestore.py     # Async Firestore client
-│   │   └── utils/
-│   │       └── helpers.py       # Utility functions
-│   ├── tests/
-│   │   ├── unit/                # Fast unit tests
-│   │   ├── integration/         # API integration tests
-│   │   └── acceptance/          # ATDD with pytest-bdd (Gherkin features)
-│   ├── Dockerfile               # Multi-stage build for Cloud Run
-│   ├── pyproject.toml           # Poetry configuration
-│   └── env.example              # Environment variable template
-│
-├── infra/                       # Terraform — all GCP resources
-│   ├── envs/prod/               # Root module (state backend, var wiring)
-│   └── modules/
-│       ├── gcp-bootstrap/       # APIs, TF state bucket, Workload Identity Federation
-│       ├── gcp-valheim-vm/      # (Phase 1) VM, persistent disk, firewall, cloud-init
-│       ├── gcp-backups/         # (Phase 2) GCS bucket + snapshot schedule
-│       ├── gcp-bot-runtime/     # (Phase 3) Cloud Run service, GSM secrets, Firestore
-│       └── gcp-idle-watcher/    # (Phase 7) Cloud Scheduler + Cloud Function
-│
-├── server/                      # Files that run *inside* the Valheim VM
-│   ├── docker-compose.yml       # lloesche/valheim-server-docker container
-│   ├── cloud-init.yaml          # First-boot bootstrap consumed via VM metadata
-│   └── scripts/                 # SSH-invoked helpers (switch/create/delete world)
-│
-├── docs/
-│   ├── architecture.md          # Component diagram + interface boundaries
-│   ├── bootstrap.md             # One-time setup procedure (Phase 0.5)
-│   └── runbook.md               # Recovery scenarios when something is wedged
-│
-├── .github/workflows/
-│   ├── ci.yaml                  # Bot lint/test/build (path-filtered to bot/)
-│   └── terraform.yml            # Terraform fmt/validate/plan/apply (WIF-authed)
-│
-├── TODO.md                      # Setup guide & manual tasks
-└── CHANGELOG.md                 # Release notes
-```
-
----
-
-## ☁️ Deployment
-
-> **Migration in progress.** Cloud Run + GSM + Firestore are click-ops today. They become Terraform-managed via `infra/modules/gcp-bot-runtime` in Phase 3. Until then, the manual steps below remain the source of truth for the bot runtime; everything else (VM, backups, idle watcher, IAM, WIF) goes through Terraform from day one.
-
-### Cloud Run (current state)
-
-The bot is deployed via **Cloud Run's GitHub integration** — push to `main` and it auto-deploys.
-
-Features:
-- HTTP health check endpoint for container lifecycle
-- **CPU throttling** for cost optimization (only pay when processing)
-- Google Secret Manager for secure credential storage
-- Firestore for persistent data
-
-### First-Time Setup (manual, pre-Phase-3)
-
-1. Connect your GitHub repo to Cloud Run via the [Cloud Console](https://console.cloud.google.com/run).
-2. Select your repo and branch (`main` or `master`); set **Source directory** to `bot/` so Cloud Build uses `bot/Dockerfile` as the build context.
-3. Cloud Run will build from `bot/Dockerfile` automatically on every push.
-
-After the first deploy, apply cost-optimized settings:
+### Cloud Run (the bot)
 
 ```bash
-gcloud run services update mr-swede \
+PROJECT_ID=$(gcloud config get-value project)
+
+gcloud run deploy mr-swede \
+  --source bot/ \
   --region=us-central1 \
-  --cpu-throttling \
-  --cpu-boost \
-  --memory=512Mi \
-  --cpu=1 \
-  --min-instances=1 \
-  --max-instances=1
+  --service-account=mr-swede-sa@${PROJECT_ID}.iam.gserviceaccount.com \
+  --cpu-throttling --cpu-boost \
+  --memory=512Mi --cpu=1 \
+  --min-instances=1 --max-instances=1 \
+  --timeout=3600 \
+  --set-env-vars="ENV=production,LOG_FORMAT=json,DISCORD_BOT_NAME=mr-swede,VALHEIM_INSTANCE_NAME=valheim-server,VALHEIM_ZONE=us-central1-a"
 ```
 
-### Terraform-managed infrastructure
+`min-instances=1` is required — Discord drops gateway sessions that go idle. CPU throttling keeps the warm-instance bill at ~$3-5/month.
 
-Everything else lives in [`infra/`](infra/). One-time bootstrap (state bucket, APIs, Workload Identity Federation) is documented in [`docs/bootstrap.md`](docs/bootstrap.md). Day-to-day:
+### Terraform (everything else)
 
 ```bash
 cd infra/envs/prod
@@ -336,204 +116,149 @@ terraform plan
 terraform apply
 ```
 
-CI (GitHub Actions) runs `fmt → validate → plan` on every PR touching `infra/**` and runs `apply` on merge to `master` (gated by the `prod` GitHub Environment for manual approval). Auth is via WIF — no JSON keys anywhere.
+CI runs `fmt → validate → plan` on every PR touching `infra/**` and runs `apply` on merge to `master` (gated by the `prod` GitHub Environment). Auth is via Workload Identity Federation — no JSON keys.
 
-### Cost Estimate
+### Cost estimate
 
-| Setting | Value | Why |
-|---------|-------|-----|
-| CPU Throttling | ✅ Enabled | Only pay for CPU when processing commands |
-| Min Instances | 1 | Keeps Discord gateway WebSocket connection alive |
-| Max Instances | 1 | No need to scale for personal server |
-| Memory | 512Mi | Sufficient for bot + audio |
-| CPU | 1 vCPU | Handles audio streaming (throttled when idle) |
+| Component | ~Monthly |
+|---|---|
+| Cloud Run bot (min-instances=1, throttled) | $3–5 |
+| Valheim VM (e2-standard-2, stopped most of the time) | $5–10 |
+| Persistent disk (20GB pd-balanced) | ~$2 |
+| Snapshots + GCS backups (Phase 2) | <$1 |
+| **Total** | **~$10–18** |
 
-**Estimated monthly cost (bot runtime alone): ~$3–5.** Add ~$8–10/mo for the Valheim stack once Phases 1–7 are live (VM, persistent disk, snapshots, idle watcher).
-
-> **Note:** The bot maintains a persistent WebSocket connection to Discord (Gateway transport, required for voice/music), so `min-instances=1` is required. CPU throttling ensures you only pay for actual processing time.
-
-### GitHub Actions
-
-Two workflows live in [`.github/workflows/`](.github/workflows):
-
-| Workflow | Triggers on | Does |
-|---|---|---|
-| `ci.yaml` | changes under `bot/**` | Ruff lint, Ruff format check, MyPy, pytest (unit + acceptance), Docker build smoke test |
-| `terraform.yml` | changes under `infra/**` | `terraform fmt -check`, `validate`, `plan` on PR; `apply` on push to `main`/`master`, gated by the `prod` Environment |
+The dominant cost is the VM running 24/7. Phase 7's idle watcher is what brings the bill down by stopping it after 30 min of zero players.
 
 ---
 
-## ⚙️ Configuration
+## Configuration
 
-### Environment Variables
+### Environment variables (non-secret)
 
-#### Core Settings
+| Variable | Default | Description |
+|---|---|---|
+| `ENV` | `development` | `development` or `production` |
+| `LOG_LEVEL` | `INFO` | Logging level |
+| `LOG_FORMAT` | `json` | `json` or `console` |
+| `DISCORD_BOT_NAME` | `mr-swede` | Key into the GSM `discord-bot-secrets` JSON |
+| `DISCORD_GUILD_ID` | — | If set, slash commands sync to this guild only (instant). Empty = global sync (~1hr). |
+| `GCP_PROJECT_ID` | auto-detected | GCP project ID |
+| `VALHEIM_ZONE` | `us-central1-a` | Compute zone of the Valheim VM |
+| `VALHEIM_INSTANCE_NAME` | `valheim-server` | Instance name to control |
+| `HOST` | `0.0.0.0` | HTTP server bind address |
+| `PORT` | `8080` | HTTP server port |
 
-| Variable | Required | Default | Description |
-|----------|----------|---------|-------------|
-| `ENV` | ❌ | `development` | Environment (`development`, `production`) |
-| `DEBUG` | ❌ | `false` | Enable debug mode |
-| `LOG_LEVEL` | ❌ | `INFO` | Logging level |
-| `LOG_FORMAT` | ❌ | `json` | Log format (`console` or `json`) |
+### Local-dev overrides (skip GSM)
 
-#### Discord Settings
-
-| Variable | Required | Default | Description |
-|----------|----------|---------|-------------|
-| `DISCORD_BOT_NAME` | ❌ | `mr-swede` | Bot name in GSM secrets (`mr-swede` or `ow2-ranked-bot`) |
-| `DISCORD_GUILD_ID` | ❌ | — | Guild ID for fast command sync (dev only) |
-
-#### GCP Settings
-
-| Variable | Required | Default | Description |
-|----------|----------|---------|-------------|
-| `GCP_PROJECT_ID` | ❌ | Auto-detected | GCP project ID |
-| `FIRESTORE_COLLECTION_PREFIX` | ❌ | `mr_swede_` | Firestore collection prefix |
-| `HOST` | ❌ | `0.0.0.0` | Server host (Cloud Run) |
-| `PORT` | ❌ | `8080` | Server port (Cloud Run) |
-
-#### Local Development (when GSM unavailable)
-
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `DISCORD_TOKEN` | ✅* | Discord bot token |
-| `DISCORD_APPLICATION_ID` | ❌ | Discord application ID |
-| `BLIZZARD_CLIENT_ID` | ❌ | Blizzard OAuth client ID |
-| `BLIZZARD_CLIENT_SECRET` | ❌ | Blizzard OAuth client secret |
-| `BLIZZARD_REGION` | ❌ | API region (`us`, `eu`, `kr`, `tw`) |
-| `SPOTIFY_CLIENT_ID` | ❌ | Spotify API client ID |
-| `SPOTIFY_CLIENT_SECRET` | ❌ | Spotify API client secret |
-
-> *Required only when running locally without GSM access
+| Variable | Description |
+|---|---|
+| `DISCORD_TOKEN` | Discord bot token — when set, GSM lookup is skipped |
+| `DISCORD_APPLICATION_ID` | Discord application ID |
 
 ### Google Secret Manager
 
-In production, secrets are stored as **JSON objects** in GSM:
-
-#### Secret Structure
-
-```
-blizzard-secrets (JSON)
-├── client_id
-└── client_secret
-
-discord-bot-secrets (JSON)
-├── mr-swede.id
-├── mr-swede.token
-├── mr-swede.public_key
-├── ow2-ranked-bot.id
-├── ow2-ranked-bot.token
-└── ow2-ranked-bot.public_key
-
-spotify-secrets (JSON)
-├── client_id
-└── client_secret
-```
-
-#### Example JSON for `discord-bot-secrets`:
+In production, the bot reads its Discord token from a single GSM secret named `discord-bot-secrets` containing JSON of the form:
 
 ```json
 {
-  "mr-swede.id": "123456789",
-  "mr-swede.token": "your-bot-token",
-  "mr-swede.public_key": "your-public-key",
-  "ow2-ranked-bot.id": "987654321",
-  "ow2-ranked-bot.token": "other-bot-token",
-  "ow2-ranked-bot.public_key": "other-public-key"
+  "mr-swede": {
+    "id": "123456789",
+    "token": "your-bot-token",
+    "public_key": "your-public-key"
+  }
 }
 ```
 
-The bot automatically loads from GSM in Cloud Run. For local development, set the environment variables above instead
+The nested-object form above is preferred. The bot also accepts dot-notation keys (`"mr-swede.token": "..."`) for backwards compatibility — see [bot/src/config/secrets.py](bot/src/config/secrets.py) for both lookup paths. The Valheim server password lives in a separate `valheim-server-password` secret seeded out-of-band (see [docs/bootstrap.md](docs/bootstrap.md)).
 
 ---
 
-## 🧪 Development
+## Architecture
 
-> Bot-side commands run from inside [`bot/`](bot/). `pre-commit` runs from the repo root.
-
-### Code Quality
-
-```bash
-# (cd bot first)
-
-# Lint with Ruff
-poetry run ruff check src tests
-
-# Format with Ruff
-poetry run ruff format src tests
-
-# Type check with MyPy
-poetry run mypy src
-
-# Run all quality checks (from repo root)
-cd .. && poetry --directory bot run pre-commit run --all-files
+```
+mr-swede/
+├── bot/                                 # Cloud Run service (Python, discord.py)
+│   ├── src/
+│   │   ├── main.py                      # uvicorn launcher
+│   │   ├── http.py                      # FastAPI app (health checks, lifespan)
+│   │   ├── bot.py                       # Discord client + token resolution
+│   │   ├── config/
+│   │   │   ├── settings.py              # Pydantic settings
+│   │   │   ├── secrets.py               # GSM JSON-secret lookup
+│   │   │   └── logging.py               # structlog setup
+│   │   ├── cogs/
+│   │   │   ├── diagnostics.py           # /ping, /info
+│   │   │   └── valheim.py               # /valheim status|start|stop (scaffold)
+│   │   ├── services/
+│   │   │   ├── compute.py               # GCE instance start/stop/describe (Phase 3 stub)
+│   │   │   └── server_query.py          # Steam A2S query (Phase 3 stub)
+│   │   └── utils/helpers.py
+│   ├── tests/unit/                      # pytest, no integration tests yet
+│   ├── Dockerfile                       # Multi-stage poetry → pip
+│   └── pyproject.toml
+│
+├── infra/                               # Terraform — all GCP resources
+│   ├── envs/prod/                       # Root module (state backend, var wiring)
+│   └── modules/
+│       ├── gcp-bootstrap/               # APIs, TF state bucket, WIF
+│       ├── gcp-valheim-vm/              # VM, persistent disk, firewall, cloud-init
+│       ├── gcp-backups/                 # GCS bucket + snapshot schedule
+│       └── gcp-idle-watcher/            # Phase 7: scheduled VM auto-stop
+│
+├── server/                              # Files that run *inside* the Valheim VM
+│   ├── docker-compose.yml               # lloesche/valheim-server-docker
+│   ├── cloud-init.yaml                  # First-boot bootstrap
+│   └── scripts/                         # SSH-invoked helpers
+│
+├── docs/
+│   ├── architecture.md                  # Diagram + interface boundaries
+│   ├── bootstrap.md                     # One-time GCP setup
+│   └── runbook.md                       # Recovery scenarios
+│
+├── .github/workflows/
+│   ├── ci.yaml                          # Bot lint/test/build (path-filtered)
+│   └── terraform.yml                    # TF fmt/validate/plan/apply (WIF-authed)
+│
+├── TODO.md                              # Manual setup checklist
+└── CHANGELOG.md                         # Version history
 ```
 
-### Pre-commit Hooks
-
-Install pre-commit hooks to automatically check code quality:
-
-```bash
-poetry run pre-commit install
-```
-
-### Test-Driven Development
-
-The project follows ATDD (Acceptance Test-Driven Development):
-
-1. **Feature files** in `bot/tests/acceptance/features/` define behavior in Gherkin
-2. **Step definitions** in `bot/tests/acceptance/` implement the scenarios
-3. **Unit tests** in `bot/tests/unit/` test individual components
+See [docs/architecture.md](docs/architecture.md) for the network/data-flow diagram and the interface boundaries that make the cloud provider swappable.
 
 ---
 
-## 🛠️ Tech Stack
+## Tech stack
 
 | Category | Technology |
-|----------|------------|
-| **Runtime** | Python 3.12 |
-| **Discord** | discord.py 2.x with slash commands |
-| **Web Framework** | FastAPI (health checks) |
-| **Database** | Google Cloud Firestore |
-| **Secrets** | Google Secret Manager |
-| **Audio** | yt-dlp + FFmpeg |
-| **Config** | Pydantic Settings |
-| **Logging** | structlog (JSON) |
-| **Testing** | pytest, pytest-bdd, pytest-asyncio |
-| **Linting** | Ruff, MyPy |
-| **CI/CD** | GitHub Actions, Cloud Build |
-| **Container** | Docker, Cloud Run |
+|---|---|
+| Runtime | Python 3.12 |
+| Discord | discord.py 2.x (slash commands only) |
+| HTTP | FastAPI + uvicorn (Cloud Run health checks) |
+| Secrets | Google Secret Manager |
+| Compute (Phase 3) | google-cloud-compute |
+| Server query (Phase 3) | python-a2s |
+| Config | Pydantic Settings |
+| Logging | structlog (JSON) |
+| Testing | pytest, pytest-asyncio |
+| Linting | Ruff, MyPy |
+| CI/CD | GitHub Actions, Cloud Build |
+| Infrastructure | Terraform, GCP (Cloud Run, GCE, GSM) |
 
 ---
 
-## 📄 License
+## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
----
-
-## 🤝 Contributing
-
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Write tests first (TDD!)
-4. Make your changes
-5. Run quality checks (`poetry run pytest && poetry run ruff check`)
-6. Commit your changes (`git commit -m 'Add amazing feature'`)
-7. Push to the branch (`git push origin feature/amazing-feature`)
-8. Open a Pull Request
+MIT — see [LICENSE](LICENSE).
 
 ---
 
-## 📚 Documentation
+## Documentation
 
-- **[docs/architecture.md](./docs/architecture.md)** — Component diagram + interface boundaries for the multi-component repo
-- **[docs/bootstrap.md](./docs/bootstrap.md)** — One-time GCP setup (state bucket, APIs, Workload Identity Federation)
-- **[docs/runbook.md](./docs/runbook.md)** — Recovery procedures for when something is wedged
-- **[infra/README.md](./infra/README.md)** — Terraform layout + day-to-day workflow
-- **[TODO.md](./TODO.md)** — Bot-side setup guide (Discord developer portal, GSM secrets, etc.)
-- **[CHANGELOG.md](./CHANGELOG.md)** — Version history and release notes
-
-### Note:
-Smol Server ID: 635551370761601062
-Owner ID: 2584733691276165234
+- [docs/architecture.md](./docs/architecture.md) — Component diagram + interface boundaries
+- [docs/bootstrap.md](./docs/bootstrap.md) — One-time GCP setup (state bucket, APIs, WIF)
+- [docs/runbook.md](./docs/runbook.md) — Recovery procedures
+- [infra/README.md](./infra/README.md) — Terraform layout
+- [bot/README.md](./bot/README.md) — Bot-only quickstart
+- [TODO.md](./TODO.md) — Manual setup checklist
+- [CHANGELOG.md](./CHANGELOG.md) — Version history

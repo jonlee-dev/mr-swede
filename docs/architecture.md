@@ -2,7 +2,7 @@
 
 ## Components
 
-- **Bot (`bot/`)** — Python + discord.py (Gateway), deployed to Cloud Run with `min-instances=1`. Handles `/valheim *` slash commands plus the existing music / Overwatch cogs. *(Phase 3 wires the new commands.)*
+- **Bot (`bot/`)** — Python + discord.py (Gateway), deployed to Cloud Run with `min-instances=1`. Slash-only. Handles `/ping`, `/info`, and the `/valheim status|start|stop` group. *(Phase 3 wires `/valheim *` to the VM; the rest already work.)*
 - **Valheim VM (`server/` + `infra/modules/gcp-valheim-vm`)** — single GCE `e2-standard-2` in `us-central1-a` running Docker Compose + `lloesche/valheim-server`, world data on a separately-attached `pd-balanced` persistent disk. Crossplay ON; players join via PlayFab code. *(Built in Phase 1.)*
 - **Backups (`infra/modules/gcp-backups`)** — daily GCE disk snapshots + `gsutil rsync` of world files to a GCS bucket. *(Phase 2.)*
 - **Idle watcher (`infra/modules/gcp-idle-watcher`)** — Cloud Scheduler → Cloud Function polling the VM's Steam A2S query port. Stops the VM after 30 min of zero players. *(Phase 7.)*
@@ -61,8 +61,13 @@ The cloud-init blob is rendered by `templatefile()` with the four runtime artifa
 
 ## Key interface boundaries (Phase 3+)
 
-- `bot/src/services/valheim/compute/` — abstract `ComputeProvider` with a `gcp.py` impl.
-- `bot/src/services/valheim/world/` — abstract `WorldStorage` over SSH (rewrites `/etc/valheim/world.env` and triggers a service restart).
-- `bot/src/services/valheim/query/` — abstract `ServerQuery` (Steam A2S + log tail for the PlayFab join code).
+The bot exposes two service modules with intentionally narrow public surfaces:
 
-Swapping clouds means writing new implementations of these three interfaces. The command layer above is cloud-agnostic; the VM's runtime artifacts in `server/` are also vendor-neutral (only `fetch-secrets.sh` is GCP-specific, and it's a single file).
+- [`bot/src/services/compute.py`](../bot/src/services/compute.py) — three free functions (`describe_instance`, `start_instance`, `stop_instance`) returning a frozen `InstanceState` dataclass. GCE-specific today; Phase 3 will fill the stubs using `google-cloud-compute`.
+- [`bot/src/services/server_query.py`](../bot/src/services/server_query.py) — one function `query(host, port)` returning a frozen `GameState` dataclass. Steam A2S today; Phase 3 will fill the stub using `python-a2s`.
+
+**Swapping clouds.** We deliberately picked a single concrete impl over an abstract `Protocol`/ABC up front. To swap to AWS/Hetzner/etc. later: rename `compute.py` → `gcp_compute.py`, lift the function signatures into a `Protocol` in a new `compute.py`, add an `aws_ec2.py` parallel impl, and update one import line per call site (currently just [`bot/src/cogs/valheim.py`](../bot/src/cogs/valheim.py)). The `InstanceState`/`GameState` dataclasses stay unchanged — providers map their native types into them.
+
+The VM's runtime artifacts in `server/` are vendor-neutral on their own (only `fetch-secrets.sh` is GCP-specific, and it's a single file).
+
+World-management surface (rewrite `world.env`, restart the service over SSH) is intentionally *not* in scope for Phase 3 — it'll appear if/when we add `/valheim worlds switch <name>`.
