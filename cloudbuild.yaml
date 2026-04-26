@@ -1,0 +1,57 @@
+# Build the bot image from bot/ and update the existing Cloud Run service.
+#
+# This file replaces the trigger's inline build config, which hard-coded
+# `Dockerfile` at the repo root and broke when v3.0.0 moved everything
+# into bot/. The trigger in GCP must be set to use a Cloud Build
+# configuration file at `cloudbuild.yaml` (not "auto-detect Dockerfile"
+# or inline YAML) for this file to take effect.
+#
+# Substitutions are provided by the trigger (project, repo, region,
+# service name). Override there, not here.
+
+steps:
+  - id: Build
+    name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - --no-cache
+      - -t
+      - $_AR_HOSTNAME/$_AR_PROJECT_ID/$_AR_REPOSITORY/$REPO_NAME/$_SERVICE_NAME:$COMMIT_SHA
+      - -f
+      - bot/Dockerfile
+      - bot
+
+  - id: Push
+    name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - $_AR_HOSTNAME/$_AR_PROJECT_ID/$_AR_REPOSITORY/$REPO_NAME/$_SERVICE_NAME:$COMMIT_SHA
+
+  - id: Deploy
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    entrypoint: gcloud
+    args:
+      - run
+      - services
+      - update
+      - $_SERVICE_NAME
+      - --platform=managed
+      - --image=$_AR_HOSTNAME/$_AR_PROJECT_ID/$_AR_REPOSITORY/$REPO_NAME/$_SERVICE_NAME:$COMMIT_SHA
+      - --labels=managed-by=gcp-cloud-build-deploy-cloud-run,commit-sha=$COMMIT_SHA,gcb-build-id=$BUILD_ID,gcb-trigger-id=$_TRIGGER_ID
+      - --region=$_DEPLOY_REGION
+      - --quiet
+
+images:
+  - $_AR_HOSTNAME/$_AR_PROJECT_ID/$_AR_REPOSITORY/$REPO_NAME/$_SERVICE_NAME:$COMMIT_SHA
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+  substitutionOption: ALLOW_LOOSE
+
+substitutions:
+  _AR_HOSTNAME: us-east4-docker.pkg.dev
+  _AR_PROJECT_ID: mr-swede
+  _AR_REPOSITORY: cloud-run-source-deploy
+  _DEPLOY_REGION: us-east4
+  _PLATFORM: managed
+  _SERVICE_NAME: mr-swede
