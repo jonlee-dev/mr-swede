@@ -1,48 +1,38 @@
 [tool.poetry]
 name = "mr-swede"
-version = "2.1.12"
-description = "A Swiss-army-knife Discord bot for Overwatch stats, music streaming, and more"
+version = "3.0.0"
+description = "Discord-controlled Valheim server (start/stop/status)"
 authors = ["Jonathan Lee"]
 readme = "README.md"
 packages = [{include = "src"}]
 
 [tool.poetry.dependencies]
 python = "^3.12"
-# Discord
-"discord.py" = {extras = ["voice"], version = "^2.3.2"}
-# Web framework for Cloud Run health checks
+# Discord (no voice extras: we don't play audio)
+"discord.py" = "^2.3.2"
+# HTTP server for Cloud Run health checks
 fastapi = "^0.109.0"
 uvicorn = {extras = ["standard"], version = "^0.27.0"}
-# API clients
-aiohttp = "^3.9.1"
-httpx = "^0.26.0"
 # Google Cloud
 google-cloud-secret-manager = "^2.18.0"
-google-cloud-firestore = "^2.14.0"
-# Spotify
-spotipy = "^2.23.0"
-# YouTube/Audio
-yt-dlp = "^2024.1.0"
-PyNaCl = "^1.5.0"
 # Configuration
 pydantic = "^2.5.3"
 pydantic-settings = "^2.1.0"
 python-dotenv = "^1.0.0"
-# Utilities
+# Logging
 structlog = "^24.1.0"
+# Phase 3 (currently unused; uncomment when wiring real impls)
+# google-cloud-compute = "^1.19.0"
+# python-a2s = "^1.4.1"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.0.0"
 pytest-asyncio = "^0.23.3"
 pytest-cov = "^4.1.0"
 pytest-mock = "^3.12.0"
-pytest-bdd = "^7.0.1"
-hypothesis = "^6.92.0"
 ruff = "^0.1.13"
 mypy = "^1.8.0"
 pre-commit = "^3.6.0"
-factory-boy = "^3.3.0"
-aioresponses = "^0.7.6"
 freezegun = "^1.4.0"
 
 [tool.poetry.scripts]
@@ -59,14 +49,7 @@ addopts = "-v --cov=src --cov-report=term-missing --cov-report=html"
 markers = [
     "unit: Unit tests",
     "integration: Integration tests",
-    "acceptance: Acceptance tests (ATDD)",
     "slow: Slow running tests",
-]
-filterwarnings = [
-    # Ignore audioop deprecation from discord.py (will be fixed in discord.py 3.x)
-    "ignore:'audioop' is deprecated:DeprecationWarning",
-    # Ignore pytest-bdd internal usefixtures warning
-    "ignore:usefixtures\\(\\) .* without arguments has no effect:pytest.PytestWarning",
 ]
 
 [tool.ruff]
@@ -83,7 +66,14 @@ select = [
     "ARG", # flake8-unused-arguments
     "SIM", # flake8-simplify
 ]
-ignore = ["E501"]
+ignore = [
+    "E501",  # line-length handled by formatter
+    # discord.py event handlers and FastAPI handlers are signature-defined;
+    # the `app` / `signum` / `frame` etc. arguments aren't always used in the body
+    # but they MUST appear in the signature for the framework to call us.
+    "ARG001",
+    "ARG002",
+]
 
 [tool.ruff.isort]
 known-first-party = ["src"]
@@ -107,4 +97,3 @@ exclude_lines = [
     "raise NotImplementedError",
     "if TYPE_CHECKING:",
 ]
-

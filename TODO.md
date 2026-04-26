@@ -1,434 +1,143 @@
-# Mr. Swede Discord Bot - TODO & Setup Guide
+# Mr. Swede - setup & TODO
 
-This document lists all the manual tasks needed to complete the setup of the Mr. Swede Discord bot for Cloud Run deployment.
+This is the manual-step checklist for standing up the Discord bot and the GCP resources it depends on. Code-level tasks live as comments in `bot/src/cogs/valheim.py` and `bot/src/services/compute.py`.
 
-## 🔐 Secrets Structure
-
-Your secrets are stored as JSON in Google Secret Manager:
-
-| Secret Name | Keys | Resource URI |
-|-------------|------|--------------|
-| `blizzard-secrets` | `client_id`, `client_secret` | `projects/749144818572/secrets/blizzard-secrets/versions/1` |
-| `discord-bot-secrets` | `mr-swede.id`, `mr-swede.token`, `mr-swede.public_key`, `ow2-ranked-bot.id`, `ow2-ranked-bot.token`, `ow2-ranked-bot.public_key` | `projects/749144818572/secrets/discord-bot-secrets/versions/1` |
-| `spotify-secrets` | `client_id`, `client_secret` | `projects/749144818572/secrets/spotify-secrets/versions/1` |
-
-The bot automatically loads these secrets via the `SecretManager` class in `bot/src/config/secrets.py`.
-
-### Switching Between Discord Bots
-
-To use a different Discord bot, set the `DISCORD_BOT_NAME` environment variable:
-
-```bash
-# Use mr-swede (default)
-DISCORD_BOT_NAME=mr-swede
-
-# Use ow2-ranked-bot
-DISCORD_BOT_NAME=ow2-ranked-bot
-```
+For the Valheim VM infrastructure (Terraform, cloud-init, secrets), see [docs/bootstrap.md](docs/bootstrap.md). For day-to-day operations, see [docs/runbook.md](docs/runbook.md).
 
 ---
 
-## 🔧 Permissions & Access Required
+## Phase status
 
-### Google Cloud Platform (GCP)
+| Phase | What | Status |
+|---|---|---|
+| 0 | Repo reorg into `bot/` + `infra/` | ✅ done |
+| 0.5 | One-time Terraform bootstrap (WIF + state bucket) | ✅ done |
+| 1 | Valheim VM + cloud-init + Secret Manager (Terraform) | ✅ done |
+| 2 | Bot prune (kill OW/music/Firestore) + scaffolds for Phase 3 | ✅ done |
+| 3 | Wire `/valheim status\|start\|stop` to GCE + A2S | ⏳ next |
+| 7 | Idle watcher (Cloud Function or scheduled job) | future |
 
-#### Required APIs to Enable
+---
+
+## Secrets in GSM
+
+| Secret | Keys | Purpose |
+|---|---|---|
+| `discord-bot-secrets` | `mr-swede.id`, `mr-swede.token`, `mr-swede.public_key` | Discord bot token |
+| `valheim-server-password` | _(no keys, just a payload)_ | Game server password — seeded out-of-band |
+
+The `discord-bot-secrets` value is JSON; the `mr-swede` key holds the credentials for this bot. The `SecretManager` class in [bot/src/config/secrets.py](bot/src/config/secrets.py) reads it with both nested and dot-notation lookups.
+
+The `valheim-server-password` secret container is created by Terraform but its value is seeded out-of-band — never put it in Terraform state. See [docs/bootstrap.md](docs/bootstrap.md) for the seeding command.
+
+---
+
+## GCP setup
+
+### APIs to enable
+
 ```bash
-# Enable required GCP APIs
 gcloud services enable \
   secretmanager.googleapis.com \
-  firestore.googleapis.com \
+  compute.googleapis.com \
   run.googleapis.com \
   artifactregistry.googleapis.com \
-  cloudresourcemanager.googleapis.com
+  cloudresourcemanager.googleapis.com \
+  iamcredentials.googleapis.com
 ```
 
-#### Service Account Setup
-1. **Create a service account for Cloud Run:**
-   ```bash
-   gcloud iam service-accounts create mr-swede-sa \
-     --display-name="Mr. Swede Discord Bot"
-   ```
+### Service account for the Cloud Run bot
 
-2. **Grant required roles to the service account:**
-   ```bash
-   PROJECT_ID=$(gcloud config get-value project)
-   SA_EMAIL="mr-swede-sa@${PROJECT_ID}.iam.gserviceaccount.com"
-   
-   # Secret Manager access (to read JSON secrets)
-   gcloud projects add-iam-policy-binding $PROJECT_ID \
-     --member="serviceAccount:${SA_EMAIL}" \
-     --role="roles/secretmanager.secretAccessor"
-   
-   # Firestore access
-   gcloud projects add-iam-policy-binding $PROJECT_ID \
-     --member="serviceAccount:${SA_EMAIL}" \
-     --role="roles/datastore.user"
-   
-   # Cloud Run invoker (for health checks)
-   gcloud projects add-iam-policy-binding $PROJECT_ID \
-     --member="serviceAccount:${SA_EMAIL}" \
-     --role="roles/run.invoker"
-   ```
+```bash
+PROJECT_ID=$(gcloud config get-value project)
+SA_EMAIL="mr-swede-sa@${PROJECT_ID}.iam.gserviceaccount.com"
+
+gcloud iam service-accounts create mr-swede-sa \
+  --display-name="Mr. Swede Discord Bot"
+
+# Read Discord token from GSM
+gcloud projects add-iam-policy-binding $PROJECT_ID \
+  --member="serviceAccount:${SA_EMAIL}" \
+  --role="roles/secretmanager.secretAccessor"
+
+# Phase 3: control the Valheim VM
+gcloud projects add-iam-policy-binding $PROJECT_ID \
+  --member="serviceAccount:${SA_EMAIL}" \
+  --role="roles/compute.instanceAdmin.v1"
+```
+
+The `compute.instanceAdmin.v1` binding is wider than what we need for start/stop alone. When Phase 3 lands, narrow this to a custom role with just `compute.instances.start`, `compute.instances.stop`, `compute.instances.get`, and `compute.zoneOperations.get`.
 
 ---
 
-## 🎮 Discord Developer Portal Setup
+## Discord developer portal
 
-### For mr-swede Bot
-1. Go to [Discord Developer Portal](https://discord.com/developers/applications)
-2. Select or create your application
-3. Go to "Bot" section
-4. Under "Privileged Gateway Intents", enable:
-   - [x] **PRESENCE INTENT** (optional, for richer status)
-   - [x] **SERVER MEMBERS INTENT** (for member tracking)
-   - [x] **MESSAGE CONTENT INTENT** (for legacy prefix commands)
-
-### OAuth2 & Permissions
-1. Go to "OAuth2" → "URL Generator"
-2. Select scopes:
-   - [x] `bot`
-   - [x] `applications.commands`
-3. Select bot permissions:
-   - [x] Send Messages
-   - [x] Embed Links
-   - [x] Attach Files
-   - [x] Read Message History
-   - [x] Use External Emojis
-   - [x] Connect (voice)
-   - [x] Speak (voice)
-   - [x] Use Voice Activity
-4. Use generated URL to invite bot to your server
+1. Open the [Discord Developer Portal](https://discord.com/developers/applications).
+2. Application → **Bot** → uncheck all privileged intents. The slash-only bot doesn't need MESSAGE CONTENT, SERVER MEMBERS, or PRESENCE.
+3. Application → **OAuth2 → URL Generator**:
+   - Scopes: `bot`, `applications.commands`
+   - Bot permissions: `Send Messages`, `Embed Links`, `Use Slash Commands`
+4. Use the generated URL to invite the bot to your server.
 
 ---
 
-## 🎵 Spotify Developer Setup
-
-Your Spotify secrets are already in GSM at `spotify-secrets` with:
-- `client_id`
-- `client_secret`
-
-If you need to update them:
-1. Go to [Spotify Developer Dashboard](https://developer.spotify.com/dashboard)
-2. Select your app
-3. Note the Client ID and Client Secret
-4. Update GSM:
-   ```bash
-   echo '{"client_id": "your-id", "client_secret": "your-secret"}' | \
-     gcloud secrets versions add spotify-secrets --data-file=-
-   ```
-
----
-
-## 🎯 Blizzard Developer Setup
-
-Your Blizzard secrets are already in GSM at `blizzard-secrets` with:
-- `client_id`
-- `client_secret`
-
-If you need to update them:
-1. Go to [Blizzard Developer Portal](https://develop.battle.net/)
-2. Select your client
-3. Note the Client ID and Client Secret
-4. Update GSM:
-   ```bash
-   echo '{"client_id": "your-id", "client_secret": "your-secret"}' | \
-     gcloud secrets versions add blizzard-secrets --data-file=-
-   ```
-
----
-
-## 🎬 YouTube Cookies Setup (Optional)
-
-YouTube blocks requests from cloud servers (bot detection). To enable music playback, you need to provide YouTube cookies from a logged-in browser session.
-
-### Step 1: Export cookies from your browser
-
-**Chrome:**
-1. Install [Get cookies.txt LOCALLY](https://chrome.google.com/webstore/detail/get-cookiestxt-locally/cclelndahbckbenkjhflpdbgdldlbecc)
-2. Log into YouTube in Chrome
-3. Go to youtube.com
-4. Click the extension → "Export"
-5. Save as `cookies.txt`
-
-**Firefox:**
-1. Install [cookies.txt](https://addons.mozilla.org/en-US/firefox/addon/cookies-txt/)
-2. Same steps as Chrome
-
-### Step 2: Upload cookies to Secret Manager
+## Cloud Run deployment (after Phase 2)
 
 ```bash
-# Create the secret
-gcloud secrets create youtube-cookie \
-  --data-file=cookies.txt \
-  --project=mr-swede
-
-# Grant access to the service account
-gcloud secrets add-iam-policy-binding youtube-cookie \
-  --member="serviceAccount:mr-swede-sa@mr-swede.iam.gserviceaccount.com" \
-  --role="roles/secretmanager.secretAccessor" \
-  --project=mr-swede
-```
-
-### Step 3: Restart Cloud Run
-
-```bash
-gcloud run services update mr-swede --region=us-east4 \
-  --update-env-vars="RESTART=$(date +%s)"
-```
-
-### Updating cookies
-
-When cookies expire (usually every few weeks), re-export and update:
-
-```bash
-gcloud secrets versions add youtube-cookie \
-  --data-file=cookies.txt \
-  --project=mr-swede
-```
-
-### ⚠️ Notes
-
-- Cookies expire periodically - you'll need to re-export them
-- This is in a gray area with YouTube's Terms of Service
-- Without cookies, `/play` will show an error about bot detection
-
----
-
-## 🗄️ Firestore Database Setup
-
-### Create Firestore Database
-```bash
-# Create Firestore in Native mode (if not already created)
-gcloud firestore databases create --location=us-central1
-```
-
-### Firestore Collections
-
-The bot uses these collections (auto-created on first use):
-- `mr_swede_accounts` - Tracked Overwatch accounts
-- `mr_swede_stats_history` - Historical stats snapshots
-- `mr_swede_user_preferences` - User settings
-
-### Optional: Create Indexes for Better Performance
-Create a file `firestore.indexes.json`:
-
-```json
-{
-  "indexes": [
-    {
-      "collectionGroup": "mr_swede_accounts",
-      "queryScope": "COLLECTION",
-      "fields": [
-        { "fieldPath": "discord_user_id", "order": "ASCENDING" },
-        { "fieldPath": "created_at", "order": "DESCENDING" }
-      ]
-    },
-    {
-      "collectionGroup": "mr_swede_stats_history",
-      "queryScope": "COLLECTION",
-      "fields": [
-        { "fieldPath": "account_id", "order": "ASCENDING" },
-        { "fieldPath": "recorded_at", "order": "DESCENDING" }
-      ]
-    }
-  ]
-}
-```
-
-Deploy indexes:
-```bash
-gcloud firestore indexes create --file=firestore.indexes.json
-```
-
----
-
-## 🚀 Cloud Run Deployment
-
-### Automatic Deployment (GitHub Integration)
-
-Cloud Run is connected directly to your GitHub repo. When you push to `main`, it automatically:
-1. Builds the Docker image from your `Dockerfile`
-2. Deploys to Cloud Run
-
-No `cloudbuild.yaml` needed — settings are configured in Cloud Run directly.
-
-### Cost-Optimized Configuration
-
-After the first deployment, apply these settings to reduce costs from ~$35/month to ~$3-5/month:
-
-```bash
-# Apply cost-optimized settings (run once)
-gcloud run services update mr-swede \
-  --region=us-central1 \
-  --cpu-throttling \
-  --cpu-boost \
-  --memory=512Mi \
-  --cpu=1 \
-  --min-instances=1 \
-  --max-instances=1 \
-  --timeout=3600 \
-  --set-env-vars="ENV=production,LOG_FORMAT=json,DISCORD_BOT_NAME=mr-swede"
-```
-
-| Setting | Value | Why |
-|---------|-------|-----|
-| `--cpu-throttling` | Enabled | Only pay for CPU when processing commands |
-| `--cpu-boost` | Enabled | Faster cold starts |
-| `--memory=512Mi` | 512 MB | Sufficient for bot + audio |
-| `--cpu=1` | 1 vCPU | Handles audio streaming |
-| `--min-instances=1` | 1 | Keeps Discord connection alive |
-| `--max-instances=1` | 1 | No need to scale for personal server |
-
-**Estimated cost: ~$3-5/month**
-
-### Switch to ow2-ranked-bot
-```bash
-gcloud run services update mr-swede \
-  --region=us-central1 \
-  --set-env-vars="DISCORD_BOT_NAME=ow2-ranked-bot"
-```
-
-### Manual Deployment (if needed)
-```bash
-# Deploy from source (uses Dockerfile)
 gcloud run deploy mr-swede \
-  --source . \
+  --source bot/ \
   --region=us-central1 \
-  --allow-unauthenticated \
-  --service-account=mr-swede-sa@${PROJECT_ID}.iam.gserviceaccount.com
+  --service-account=mr-swede-sa@${PROJECT_ID}.iam.gserviceaccount.com \
+  --cpu-throttling --cpu-boost \
+  --memory=512Mi --cpu=1 \
+  --min-instances=1 --max-instances=1 \
+  --timeout=3600 \
+  --set-env-vars="ENV=production,LOG_FORMAT=json,DISCORD_BOT_NAME=mr-swede,VALHEIM_INSTANCE_NAME=valheim-server,VALHEIM_ZONE=us-central1-a"
 ```
+
+`min-instances=1` is required — Discord drops gateway sessions that go idle. CPU throttling keeps the warm-instance bill at ~$3-5/month.
 
 ---
 
-## 💻 Local Development Setup
+## Local development
 
-> All `poetry`, `pytest`, and `python -m src.main` commands below are run from `bot/` (working directory of the Python package after the Phase 0 reorg).
+All `poetry`, `pytest`, and `python -m src.main` commands run from `bot/`.
 
-### Prerequisites
-- Python 3.12+
-- Poetry (dependency management)
-- FFmpeg (for audio playback)
-- `gcloud` CLI authenticated
-
-### Install Dependencies
 ```bash
 cd bot
-
-# Install Poetry (if not already installed)
-curl -sSL https://install.python-poetry.org | python3 -
-
-# Install project dependencies
 poetry install
-
-# Activate virtual environment
-poetry shell
-```
-
-### Authentication for GSM
-```bash
-# Authenticate with GCP (one-time)
-gcloud auth application-default login
-
-# Verify authentication
-gcloud secrets versions access latest --secret=discord-bot-secrets
-```
-
-### Run Locally
-```bash
-# Run with HTTP server (like Cloud Run)
+gcloud auth application-default login   # for GSM lookups
 poetry run python -m src.main
-
-# Or run standalone bot (no HTTP server)
-poetry run python -m src.main --standalone
-
-# Use a different bot
-DISCORD_BOT_NAME=ow2-ranked-bot poetry run python -m src.main --standalone
 ```
 
-### Run Tests
+If you don't have GSM access, set `DISCORD_TOKEN` in `bot/.env` to skip GSM entirely.
+
+---
+
+## Post-deployment checklist
+
+- [ ] Bot service account has `secretmanager.secretAccessor`
+- [ ] Bot service account has `compute.instanceAdmin.v1` (or narrower equivalent — see above)
+- [ ] Bot is online and responds to `/ping`
+- [ ] `/info` shows the right version
+- [ ] Cloud Run `/health` returns `{"status": "healthy", "bot_ready": true}`
+- [ ] Logs visible in Cloud Logging with structured JSON
+- [ ] (After Phase 3) `/valheim status` reports VM state correctly
+
+---
+
+## Troubleshooting
+
+**Bot won't connect.** Check `/health` — `bot_ready: false` with a non-empty `error` field tells you exactly why. Most often: missing `DISCORD_TOKEN` env var or GSM permissions.
+
+**Slash commands don't appear.** Either you set `DISCORD_GUILD_ID` to the wrong guild, or you're waiting on global propagation (~1hr after first sync). Set `DISCORD_GUILD_ID` to your test server for instant sync during dev.
+
+**`/valheim status` says "not implemented yet".** That's intentional — Phase 2 left these as scaffolds. Phase 3 wires them up.
+
+**GCS permissions errors.** Almost always the bot's service account is missing `secretmanager.secretAccessor` on `discord-bot-secrets` or `compute.instanceAdmin.v1` on the VM project. Check with:
+
 ```bash
-# Run all tests
-poetry run pytest
-
-# Run only unit tests
-poetry run pytest tests/unit -v
-
-# Run with coverage
-poetry run pytest --cov=src --cov-report=html
-
-# Run acceptance tests
-poetry run pytest tests/acceptance -v
+gcloud projects get-iam-policy $PROJECT_ID \
+  --flatten="bindings[].members" \
+  --filter="bindings.members:mr-swede-sa@*"
 ```
-
----
-
-## 📋 Post-Deployment Checklist
-
-- [ ] Service account has `secretmanager.secretAccessor` role
-- [ ] Service account has `datastore.user` role
-- [ ] Discord bot is online and responding to `/ping`
-- [ ] Slash commands are synced (try `/help`)
-- [ ] Overwatch stats work (`/ow stats YourBattleTag#1234`)
-- [ ] Music playback works (`/play song name`)
-- [ ] Voice channel joining works
-- [ ] Firestore database has collections created
-- [ ] Cloud Run health check passes (`/health` endpoint)
-- [ ] Logs are visible in Cloud Logging
-
----
-
-## 🐛 Troubleshooting
-
-### Common Issues
-
-**"Discord secrets not found":**
-- Check GSM secret name is exactly `discord-bot-secrets`
-- Verify the JSON structure has keys like `mr-swede.token`
-- Ensure service account has `secretmanager.secretAccessor` role
-
-**Bot doesn't respond to commands:**
-- Check `DISCORD_BOT_NAME` matches a key in `discord-bot-secrets`
-- Verify bot has correct permissions in server
-- Check Cloud Run logs for errors
-
-**Voice features don't work:**
-- Ensure FFmpeg is installed in Docker image
-- Check `min-instances` is set to 1
-- Verify bot has Connect and Speak permissions
-
-**Overwatch stats not working:**
-- Player profile might be private (must be public)
-- BattleTag is case-sensitive
-- Overfast API might be temporarily down
-
-**"Blizzard credentials not found":**
-- Check GSM secret `blizzard-secrets` exists
-- Verify JSON has `client_id` and `client_secret` keys
-- This is optional - bot works without Blizzard features
-
----
-
-## 📝 Notes
-
-### Cost Considerations
-- **Cloud Run**: With CPU throttling + `min-instances=1`, cost is ~$3-5/month
-  - Without throttling: ~$35/month (not recommended)
-  - With `min-instances=0`: ~$0 but voice connections will drop
-- **Firestore**: Free tier includes 1GB storage, 50k reads/day, 20k writes/day
-- **Secret Manager**: First 6 active secrets free, then $0.03/version/month
-
-### Voice Channel Limitations
-- Cloud Run's stateless nature makes persistent voice connections challenging
-- `min-instances=1` keeps one instance warm for voice
-- Consider Cloud Run Jobs or Compute Engine for 24/7 voice if needed
-
----
-
-## 🔄 Future Improvements
-
-- [ ] Add Redis/Memorystore for caching API responses
-- [ ] Implement playlist saving to Firestore
-- [ ] Add scheduled stats refresh using Cloud Scheduler
-- [ ] Create web dashboard for stats visualization
-- [ ] Add support for more games (Valorant, etc.)
