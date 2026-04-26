@@ -57,11 +57,11 @@ class SecretManager:
     ):
         self._project_id = project_id or os.environ.get("GCP_PROJECT_ID", "")
         self._discord_bot_name = discord_bot_name
-        self._client = None
+        self._client: Any = None
         self._cache: dict[str, Any] = {}
 
     @property
-    def client(self):
+    def client(self) -> Any:
         """Lazy-load the GSM client; tolerate missing dep / no creds."""
         if self._client is None:
             try:
@@ -95,7 +95,8 @@ class SecretManager:
             logger.warning("Empty secret path provided")
             return None
         if secret_path in self._cache:
-            return self._cache[secret_path]
+            cached: dict[str, Any] | None = self._cache[secret_path]
+            return cached
         if not self.client:
             logger.error("Secret Manager client not available - cannot fetch secrets")
             return None
@@ -103,7 +104,7 @@ class SecretManager:
         logger.info("Fetching secret from GSM", path=secret_path)
         try:
             response = self.client.access_secret_version(request={"name": secret_path})
-            parsed = json.loads(response.payload.data.decode("UTF-8"))
+            parsed: dict[str, Any] = json.loads(response.payload.data.decode("UTF-8"))
             self._cache[secret_path] = parsed
             logger.info("Loaded secret", path=secret_path, keys=list(parsed.keys()))
             return parsed

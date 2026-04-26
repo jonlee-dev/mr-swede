@@ -12,7 +12,7 @@ the query port is 2457.
 import asyncio
 from dataclasses import dataclass
 
-import a2s  # type: ignore[import-untyped]
+import a2s
 
 from src.config.logging import get_logger
 

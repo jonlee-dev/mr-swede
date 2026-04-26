@@ -23,11 +23,11 @@ logger = get_logger(__name__)
 
 
 _STATUS_COLORS: dict[str, int] = {
-    "RUNNING": 0x2ECC71,      # green
+    "RUNNING": 0x2ECC71,  # green
     "PROVISIONING": 0xF1C40F,  # amber
     "STAGING": 0xF1C40F,
-    "STOPPING": 0xE67E22,      # orange
-    "TERMINATED": 0x95A5A6,    # grey
+    "STOPPING": 0xE67E22,  # orange
+    "TERMINATED": 0x95A5A6,  # grey
 }
 
 
@@ -95,9 +95,7 @@ class ValheimCog(commands.GroupCog, name="valheim"):
         state = await compute.describe_instance(project, zone, instance)
         if state.status == "RUNNING":
             ip = state.public_ip or "address pending"
-            await interaction.followup.send(
-                content=f"Server already running at `{ip}:2456`."
-            )
+            await interaction.followup.send(content=f"Server already running at `{ip}:2456`.")
             return
         await compute.start_instance(project, zone, instance)
         await interaction.followup.send(

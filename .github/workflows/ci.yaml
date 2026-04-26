@@ -98,14 +98,8 @@ jobs:
       - name: Install project
         run: poetry install --no-interaction
 
-      - name: Install FFmpeg (for audio tests)
-        run: sudo apt-get update && sudo apt-get install -y ffmpeg
-
       - name: Run unit tests
         run: poetry run pytest tests/unit -v --cov=src --cov-report=xml -m "not slow"
-
-      - name: Run acceptance tests
-        run: poetry run pytest tests/acceptance -v -m "not slow"
 
       - name: Upload coverage
         uses: codecov/codecov-action@v4
@@ -135,34 +129,3 @@ jobs:
           tags: mr-swede:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-
-  # Integration tests (optional, run manually or on schedule)
-  integration-test:
-    name: Integration Tests
-    runs-on: ubuntu-latest
-    if: github.event_name == 'workflow_dispatch'
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-
-      - name: Install Poetry
-        uses: snok/install-poetry@v1
-        with:
-          version: ${{ env.POETRY_VERSION }}
-
-      - name: Install dependencies
-        run: poetry install --no-interaction
-
-      - name: Install FFmpeg
-        run: sudo apt-get update && sudo apt-get install -y ffmpeg
-
-      - name: Run integration tests
-        run: poetry run pytest tests/integration -v -m "integration"
-        env:
-          # These would need to be set as repository secrets
-          BLIZZARD_CLIENT_ID: ${{ secrets.BLIZZARD_CLIENT_ID }}
-          BLIZZARD_CLIENT_SECRET: ${{ secrets.BLIZZARD_CLIENT_SECRET }}

@@ -18,7 +18,7 @@ def pretty_format(message: Any, indent: int = 0) -> str:
     if isinstance(message, dict):
         lines = []
         for k, v in message.items():
-            if isinstance(v, (dict, list)):
+            if isinstance(v, dict | list):
                 lines.append(f"{prefix}{k}:")
                 lines.append(pretty_format(v, indent + 1))
             else:

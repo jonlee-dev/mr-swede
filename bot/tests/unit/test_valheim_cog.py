@@ -38,9 +38,7 @@ def _interaction() -> MagicMock:
     return interaction
 
 
-def _state(
-    status: str = "RUNNING", public_ip: str | None = "1.2.3.4"
-) -> InstanceState:
+def _state(status: str = "RUNNING", public_ip: str | None = "1.2.3.4") -> InstanceState:
     return InstanceState(
         name="valheim-server",
         zone="us-central1-a",

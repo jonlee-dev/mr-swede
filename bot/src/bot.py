@@ -1,5 +1,7 @@
 """Discord bot setup and configuration."""
 
+from typing import Any
+
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -66,11 +68,11 @@ class MrSwede(commands.Bot):
     async def on_guild_remove(self, guild: discord.Guild) -> None:
         logger.info("Left guild", guild=guild.name, guild_id=guild.id)
 
-    async def on_error(self, event_method: str, *args, **kwargs) -> None:
-        logger.exception("Error in event", event=event_method)
+    async def on_error(self, event_method: str, *args: Any, **kwargs: Any) -> None:
+        logger.exception("Error in event", event_method=event_method)
 
     async def setup_hook(self) -> None:
-        self.tree.on_error = self._on_app_command_error
+        self.tree.on_error = self._on_app_command_error  # type: ignore[method-assign]
         await self._load_cogs()
         await self._sync_commands()
 

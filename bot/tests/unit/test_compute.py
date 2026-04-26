@@ -61,9 +61,7 @@ class TestDescribeInstance:
         client.get.return_value = _fake_instance()
         with patch("src.services.compute._client", return_value=client):
             await describe_instance("my-proj", "us-east1-b", "vh")
-        client.get.assert_called_once_with(
-            project="my-proj", zone="us-east1-b", instance="vh"
-        )
+        client.get.assert_called_once_with(project="my-proj", zone="us-east1-b", instance="vh")
 
 
 class TestStartInstance:
