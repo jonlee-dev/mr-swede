@@ -12,7 +12,7 @@ Your secrets are stored as JSON in Google Secret Manager:
 | `discord-bot-secrets` | `mr-swede.id`, `mr-swede.token`, `mr-swede.public_key`, `ow2-ranked-bot.id`, `ow2-ranked-bot.token`, `ow2-ranked-bot.public_key` | `projects/749144818572/secrets/discord-bot-secrets/versions/1` |
 | `spotify-secrets` | `client_id`, `client_secret` | `projects/749144818572/secrets/spotify-secrets/versions/1` |
 
-The bot automatically loads these secrets via the `SecretManager` class in `src/config/secrets.py`.
+The bot automatically loads these secrets via the `SecretManager` class in `bot/src/config/secrets.py`.
 
 ### Switching Between Discord Bots
 
@@ -303,6 +303,8 @@ gcloud run deploy mr-swede \
 
 ## 💻 Local Development Setup
 
+> All `poetry`, `pytest`, and `python -m src.main` commands below are run from `bot/` (working directory of the Python package after the Phase 0 reorg).
+
 ### Prerequisites
 - Python 3.12+
 - Poetry (dependency management)
@@ -311,6 +313,8 @@ gcloud run deploy mr-swede \
 
 ### Install Dependencies
 ```bash
+cd bot
+
 # Install Poetry (if not already installed)
 curl -sSL https://install.python-poetry.org | python3 -
 

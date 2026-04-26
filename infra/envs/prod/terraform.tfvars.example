@@ -1,0 +1,11 @@
+# Copy to terraform.tfvars (gitignored) and fill in.
+project_id   = "your-gcp-project-id"
+region       = "us-central1"
+zone         = "us-central1-a"
+github_owner = "your-github-username"
+github_repo  = "mr-swede"
+
+# Valheim server display name + initial world. Both can be edited later
+# without forcing VM replacement (the bot rewrites /etc/valheim/world.env).
+valheim_server_name   = "mr-swede-valheim"
+valheim_initial_world = "default"

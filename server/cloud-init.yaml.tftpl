@@ -1,0 +1,81 @@
+#cloud-config
+# Cloud-init for the Valheim VM. Runs ONCE at first boot.
+#
+# This file is a Terraform template -- $${ }-style placeholders are
+# interpolated by templatefile() in the gcp-valheim-vm module.
+# Embedded files use base64 encoding to dodge YAML indentation issues.
+#
+# Boot sequence:
+#   1. Install Docker + compose plugin (from Docker's apt repo)
+#   2. Format (if needed) and mount the persistent data disk
+#   3. Drop docker-compose, fetch-secrets script, and systemd units in place
+#   4. Enable systemd units; valheim-fetch-secrets runs first as a Requires dep
+
+package_update: true
+package_upgrade: false
+packages:
+  - ca-certificates
+  - curl
+  - gnupg
+  - python3
+  - jq
+
+write_files:
+  - path: /opt/valheim/docker-compose.yml
+    permissions: "0644"
+    encoding: b64
+    content: ${base64encode(docker_compose)}
+
+  - path: /opt/valheim/scripts/fetch-secrets.sh
+    permissions: "0750"
+    owner: root:root
+    encoding: b64
+    content: ${base64encode(fetch_secrets_sh)}
+
+  - path: /etc/systemd/system/valheim.service
+    permissions: "0644"
+    encoding: b64
+    content: ${base64encode(valheim_service)}
+
+  - path: /etc/systemd/system/valheim-fetch-secrets.service
+    permissions: "0644"
+    encoding: b64
+    content: ${base64encode(valheim_fetch_secrets_service)}
+
+  - path: /etc/valheim/world.env
+    permissions: "0644"
+    content: |
+      SERVER_NAME=${server_name}
+      WORLD_NAME=${world_name}
+
+  - path: /etc/valheim/.disk-id
+    permissions: "0644"
+    content: |
+      ${data_disk_device}
+
+runcmd:
+  # 1. Install Docker (Debian official) -- idempotent if re-run
+  - install -m 0755 -d /etc/apt/keyrings
+  - curl -fsSL https://download.docker.com/linux/debian/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+  - chmod a+r /etc/apt/keyrings/docker.gpg
+  - bash -c 'echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian $(. /etc/os-release && echo $VERSION_CODENAME) stable" > /etc/apt/sources.list.d/docker.list'
+  - apt-get update
+  - DEBIAN_FRONTEND=noninteractive apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+  - systemctl enable --now docker
+
+  # 2. Mount the persistent data disk at /opt/valheim/data.
+  #    Format on first boot only. Mount by-id so device order doesn't matter.
+  - mkdir -p /opt/valheim/data /opt/valheim/scripts /etc/valheim
+  - bash -c 'DEVICE=$(cat /etc/valheim/.disk-id); if ! blkid "$DEVICE" >/dev/null 2>&1; then mkfs.ext4 -F -L valheim-data "$DEVICE"; fi'
+  - bash -c 'DEVICE=$(cat /etc/valheim/.disk-id); grep -q "$DEVICE" /etc/fstab || echo "$DEVICE /opt/valheim/data ext4 defaults,nofail 0 2" >> /etc/fstab'
+  - mount -a
+
+  # 3. The lloesche image runs as UID 1000 by default; chown the mount.
+  - chown -R 1000:1000 /opt/valheim/data
+
+  # 4. Enable units. fetch-secrets runs first as a Requires dep of valheim.service.
+  - systemctl daemon-reload
+  - systemctl enable valheim-fetch-secrets.service
+  - systemctl enable --now valheim.service
+
+final_message: "Valheim server bootstrap complete. valheim.service is starting."

@@ -1,0 +1,16 @@
+[Unit]
+Description=Valheim dedicated server (docker compose)
+Requires=docker.service network-online.target valheim-fetch-secrets.service
+After=docker.service network-online.target valheim-fetch-secrets.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/valheim
+ExecStart=/usr/bin/docker compose up
+ExecStop=/usr/bin/docker compose down --timeout 120
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=180
+
+[Install]
+WantedBy=multi-user.target
