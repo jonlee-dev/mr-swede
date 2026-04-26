@@ -32,8 +32,8 @@ Bot-related Poetry / pytest / Docker commands run from inside [`bot/`](bot/). Te
 | 0.5 | One-time Terraform bootstrap (WIF + state bucket) | done |
 | 1 | Valheim VM + cloud-init + Secret Manager (Terraform) | done |
 | 2 | Bot prune (kill OW/music/Firestore) + Phase-3 scaffolds | done |
-| 3 | Wire `/valheim status\|start\|stop` to GCE + A2S | next |
-| 7 | Idle watcher (Cloud Function or scheduled job) | future |
+| 3 | Wire `/valheim status\|start\|stop` to GCE + A2S | done |
+| 7 | Idle watcher (Cloud Function or scheduled job) | next |
 
 See [TODO.md](./TODO.md) for the manual setup checklist (Discord developer portal, GCP IAM, Cloud Run deploy command).
 
@@ -45,11 +45,9 @@ See [TODO.md](./TODO.md) for the manual setup checklist (Discord developer porta
 |---|---|---|
 | `/ping` | implemented | Latency check |
 | `/info` | implemented | Bot version + loaded cog list |
-| `/valheim status` | scaffolded | Show VM state and player count (Phase 3) |
-| `/valheim start` | scaffolded | Start the Valheim VM (Phase 3) |
-| `/valheim stop` | scaffolded | Stop the Valheim VM (Phase 3) |
-
-The `/valheim` commands return "Not implemented yet" until Phase 3 wires them to [`bot/src/services/compute.py`](bot/src/services/compute.py) and [`bot/src/services/server_query.py`](bot/src/services/server_query.py).
+| `/valheim status` | implemented | Show VM state and player count |
+| `/valheim start` | implemented | Start the Valheim VM (idempotent) |
+| `/valheim stop` | implemented | Stop the Valheim VM (idempotent) |
 
 ---
 

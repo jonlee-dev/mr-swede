@@ -14,8 +14,8 @@ For the Valheim VM infrastructure (Terraform, cloud-init, secrets), see [docs/bo
 | 0.5 | One-time Terraform bootstrap (WIF + state bucket) | ✅ done |
 | 1 | Valheim VM + cloud-init + Secret Manager (Terraform) | ✅ done |
 | 2 | Bot prune (kill OW/music/Firestore) + scaffolds for Phase 3 | ✅ done |
-| 3 | Wire `/valheim status\|start\|stop` to GCE + A2S | ⏳ next |
-| 7 | Idle watcher (Cloud Function or scheduled job) | future |
+| 3 | Wire `/valheim status\|start\|stop` to GCE + A2S | ✅ done |
+| 7 | Idle watcher (Cloud Function or scheduled job) | ⏳ next |
 
 ---
 

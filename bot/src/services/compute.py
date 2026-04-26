@@ -15,12 +15,16 @@ refactor is mechanical:
   4. The cog imports the protocol and a factory rather than this module
      directly -- one-line edit per call site.
 
-The public surface is deliberately narrow (three functions, plain dict
-return for `describe_instance`) so that future-us can swap implementations
-without touching the cog's display logic.
+Threading note: google-cloud-compute ships a sync client. The public
+functions here are `async def` and run the blocking calls under
+`asyncio.to_thread` so callers never have to think about it.
 """
 
+import asyncio
 from dataclasses import dataclass
+from functools import lru_cache
+
+from google.cloud import compute_v1
 
 from src.config.logging import get_logger
 
@@ -38,28 +42,68 @@ class InstanceState:
     machine_type: str
 
 
-def describe_instance() -> InstanceState:
-    """Return current VM state.
+@lru_cache(maxsize=1)
+def _client() -> compute_v1.InstancesClient:
+    return compute_v1.InstancesClient()
 
-    Phase 3: implement with google-cloud-compute. Reads project/zone/instance
-    name from settings, calls instances().get(), maps response into InstanceState.
+
+def _short_name(url: str) -> str:
+    """GCE returns full URLs for zone/machineType — keep only the trailing segment."""
+    return url.rsplit("/", 1)[-1] if url else url
+
+
+def _public_ip(instance: compute_v1.Instance) -> str | None:
+    for nic in instance.network_interfaces or []:
+        for ac in nic.access_configs or []:
+            if ac.nat_i_p:
+                return ac.nat_i_p
+    return None
+
+
+async def describe_instance(project: str, zone: str, instance: str) -> InstanceState:
+    """Return current VM state. Wraps the sync GCE call in a thread."""
+
+    def _get() -> InstanceState:
+        vm = _client().get(project=project, zone=zone, instance=instance)
+        return InstanceState(
+            name=vm.name,
+            zone=_short_name(vm.zone),
+            status=vm.status,
+            public_ip=_public_ip(vm),
+            machine_type=_short_name(vm.machine_type),
+        )
+
+    return await asyncio.to_thread(_get)
+
+
+async def start_instance(project: str, zone: str, instance: str) -> bool:
+    """Start the VM. Idempotent. Returns True if a start was issued, False if already RUNNING.
+
+    Returns once the operation is enqueued. Does not block until RUNNING.
     """
-    raise NotImplementedError("Phase 3: wire to google-cloud-compute Client.get()")
+
+    def _start() -> bool:
+        vm = _client().get(project=project, zone=zone, instance=instance)
+        if vm.status == "RUNNING":
+            logger.info("start_instance noop: already running", instance=instance)
+            return False
+        _client().start(project=project, zone=zone, instance=instance)
+        logger.info("start_instance issued", instance=instance, prior_status=vm.status)
+        return True
+
+    return await asyncio.to_thread(_start)
 
 
-def start_instance() -> bool:
-    """Start the VM. Returns True if the start operation was issued.
+async def stop_instance(project: str, zone: str, instance: str) -> bool:
+    """Stop the VM. Idempotent. Returns True if a stop was issued, False if already TERMINATED."""
 
-    Phase 3: idempotent -- if already RUNNING, return True without calling start.
-    Otherwise calls instances().start() and returns once the operation is enqueued
-    (does not block until RUNNING; the cog handles the wait UX separately).
-    """
-    raise NotImplementedError("Phase 3: wire to google-cloud-compute Client.start()")
+    def _stop() -> bool:
+        vm = _client().get(project=project, zone=zone, instance=instance)
+        if vm.status == "TERMINATED":
+            logger.info("stop_instance noop: already terminated", instance=instance)
+            return False
+        _client().stop(project=project, zone=zone, instance=instance)
+        logger.info("stop_instance issued", instance=instance, prior_status=vm.status)
+        return True
 
-
-def stop_instance() -> bool:
-    """Stop the VM. Returns True if the stop operation was issued.
-
-    Phase 3: idempotent -- if already TERMINATED, return True without calling stop.
-    """
-    raise NotImplementedError("Phase 3: wire to google-cloud-compute Client.stop()")
+    return await asyncio.to_thread(_stop)

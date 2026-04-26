@@ -21,9 +21,8 @@ pydantic-settings = "^2.1.0"
 python-dotenv = "^1.0.0"
 # Logging
 structlog = "^24.1.0"
-# Phase 3 (currently unused; uncomment when wiring real impls)
-# google-cloud-compute = "^1.19.0"
-# python-a2s = "^1.4.1"
+google-cloud-compute = "^1.19.0"
+python-a2s = "^1.4.1"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.0.0"
