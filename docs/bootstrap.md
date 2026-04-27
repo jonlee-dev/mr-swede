@@ -129,7 +129,7 @@ The same `infra/envs/prod` root now also calls `module "valheim_vm"`. The
 - `valheim-vm-sa` service account + project-level log/metric writer roles
 - the `valheim-server-password` Secret Manager secret (container only — no value)
 - a 20GB `pd-balanced` data disk with `prevent_destroy = true`
-- a `valheim-server` GCE instance with shielded VM + cloud-init bootstrap
+- a `valheim-server` GCE instance with shielded VM + startup-script bootstrap
 
 **This is the first apply that costs real money.** Disks and the VM start
 billing the moment they're created. Stop the VM with `gcloud compute

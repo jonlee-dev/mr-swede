@@ -1,17 +1,23 @@
 ###############################################################################
-# Cloud-init render.
+# Startup-script render.
 #
-# templatefile() reads server/cloud-init.yaml.tftpl and substitutes ${...}
-# placeholders. The four embedded files (compose, fetch-secrets script,
-# two systemd units) are read with file() and inlined as base64 inside
-# write_files -- this keeps the artifacts as standalone, lintable files
-# in server/ rather than escaped heredocs in this module.
+# templatefile() reads server/startup-script.sh.tftpl and substitutes
+# $${...} placeholders. The four embedded files (compose, fetch-secrets
+# script, two systemd units) are read with file() and inlined as base64
+# inside heredocs -- this keeps the artifacts as standalone, lintable
+# files in server/ rather than escaped strings in this module.
+#
+# We use startup-script (NOT user-data / cloud-init) because GCP's
+# standard Debian image (debian-cloud/debian-12) does NOT include
+# cloud-init. Setting metadata.user-data on this image leaves the
+# blob unprocessed forever. metadata.startup-script is the canonical
+# mechanism Debian-on-GCE honors via google-guest-agent.
 ###############################################################################
 
 locals {
   server_dir = "${path.module}/../../../server"
 
-  cloud_init = templatefile("${local.server_dir}/cloud-init.yaml.tftpl", {
+  startup_script = templatefile("${local.server_dir}/startup-script.sh.tftpl", {
     docker_compose                = file("${local.server_dir}/docker-compose.yml")
     fetch_secrets_sh              = file("${local.server_dir}/scripts/fetch-secrets.sh")
     valheim_service               = file("${local.server_dir}/scripts/valheim.service")
@@ -79,8 +85,10 @@ resource "google_compute_instance" "valheim" {
   }
 
   metadata = {
-    # cloud-init reads from this metadata key by default on Debian images.
-    user-data = local.cloud_init
+    # google-guest-agent reads this metadata key on every boot and
+    # executes the value as root. Idempotent on re-runs (the script
+    # itself is designed to be safe to re-execute).
+    startup-script = local.startup_script
 
     # OS Login is overkill for a one-VM project; we use IAP-tunneled SSH
     # with project-level IAM instead.
@@ -94,13 +102,19 @@ resource "google_compute_instance" "valheim" {
   allow_stopping_for_update = true
 
   lifecycle {
-    # Cloud-init runs ONCE at first boot. Re-rendering doesn't re-bootstrap
-    # the VM, so we ignore the whole metadata map -- otherwise every edit
-    # to server/* would force VM replacement and lose the world data disk
-    # association. The other metadata keys (enable-oslogin,
-    # block-project-ssh-keys) are static so ignoring the map is safe.
+    # Unlike cloud-init (one-shot), startup-script runs every boot, so
+    # we WANT TF to push template edits through to the metadata in
+    # general. The next reboot picks them up.
+    #
+    # The exception is `ssh-keys`: gcloud compute ssh adds a per-user
+    # public key to instance metadata every time you SSH in. Without
+    # this ignore, every `terraform plan` after an SSH would show
+    # drift wanting to remove the key, and applying would lock the
+    # user out until their next gcloud ssh re-adds it. Ignoring just
+    # this key keeps TF in charge of `startup-script` while letting
+    # gcloud manage SSH access metadata as it always has.
     ignore_changes = [
-      metadata,
+      metadata["ssh-keys"],
     ]
   }
 }

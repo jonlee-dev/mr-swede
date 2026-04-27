@@ -40,13 +40,22 @@ sudo docker compose -f /opt/valheim/docker-compose.yml ps
 3. SSH via IAP and confirm the container is up: `sudo docker ps`.
 4. The PlayFab join code is printed by the server in its log — `docker compose logs | grep -i 'join code'`. If absent, `SERVER_PUBLIC` or `CROSSPLAY` may have been disabled.
 
-### 3. cloud-init failed on first boot
+### 3. startup-script failed on first boot
 
-Symptom: VM is `RUNNING` but `valheim.service` doesn't exist.
+Symptom: VM is `RUNNING` but `valheim.service` doesn't exist (or `systemctl is-active valheim` returns `inactive`/`failed`).
 
-1. View the cloud-init log on the VM: `sudo cat /var/log/cloud-init-output.log`.
-2. The four `write_files` entries should produce `/opt/valheim/docker-compose.yml`, `/opt/valheim/scripts/fetch-secrets.sh`, and the two systemd unit files. Missing files = templatefile() rendered something invalid (check `terraform plan` output).
-3. Re-running cloud-init: `sudo cloud-init clean --logs && sudo cloud-init init` (only on a one-VM project — destructive on multi-instance setups).
+1. View the startup-script's own log on the VM: `sudo cat /var/log/valheim-startup-script.log`. Also check the journal: `sudo journalctl -u google-startup-scripts.service -e`.
+2. The four heredoc-decoded files should land at `/opt/valheim/docker-compose.yml`, `/opt/valheim/scripts/fetch-secrets.sh`, and the two systemd unit files. Missing files = templatefile() rendered something invalid (check `terraform plan` output) or the heredoc base64 didn't decode cleanly.
+3. Re-run the startup-script manually:
+   ```bash
+   sudo google_metadata_script_runner --script-type startup
+   ```
+   Or simpler: `sudo systemctl restart google-startup-scripts.service`. The script is idempotent.
+4. If you suspect the rendered metadata is stale (TF apply pushed a new template but the VM hasn't rebooted), force a reboot:
+   ```bash
+   gcloud compute instances reset valheim-server --zone us-central1-a
+   ```
+   The reset triggers google-guest-agent to re-fetch and re-run the script.
 
 ### 4. fetch-secrets is failing
 

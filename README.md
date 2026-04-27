@@ -17,7 +17,7 @@ A Discord bot that controls an on-demand Valheim server. Runs on Cloud Run; the 
 |---|---|
 | [`bot/`](bot/) | Python (discord.py) bot — Cloud Run service. Slash-only. |
 | [`infra/`](infra/) | Terraform for all GCP resources (bot runtime, Valheim VM, backups, idle watcher). |
-| [`server/`](server/) | Files that run *inside* the Valheim VM — docker-compose, cloud-init, ops scripts. |
+| [`server/`](server/) | Files that run *inside* the Valheim VM — docker-compose, startup-script, ops scripts. |
 | [`docs/`](docs/) | Architecture diagram, bootstrap procedure, runbook. |
 
 Bot-related Poetry / pytest / Docker commands run from inside [`bot/`](bot/). Terraform commands run from `infra/envs/prod/`.
@@ -185,13 +185,13 @@ mr-swede/
 │   ├── envs/prod/                       # Root module (state backend, var wiring)
 │   └── modules/
 │       ├── gcp-bootstrap/               # APIs, TF state bucket, WIF
-│       ├── gcp-valheim-vm/              # VM, persistent disk, firewall, cloud-init
+│       ├── gcp-valheim-vm/              # VM, persistent disk, firewall, startup-script
 │       ├── gcp-bot-runtime/             # Cloud Run service, AR repo, Cloud Build trigger, IAM
 │       └── gcp-idle-watcher/            # Cloud Function + Scheduler that auto-stops idle VMs
 │
 ├── server/                              # Files that run *inside* the Valheim VM
 │   ├── docker-compose.yml               # lloesche/valheim-server-docker
-│   ├── cloud-init.yaml                  # First-boot bootstrap
+│   ├── startup-script.sh.tftpl          # Per-boot bootstrap (idempotent)
 │   └── scripts/                         # SSH-invoked helpers
 │
 ├── docs/

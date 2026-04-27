@@ -1,0 +1,114 @@
+#!/usr/bin/env bash
+# Startup script for the Valheim VM. Runs on EVERY boot via the
+# google-guest-agent's metadata.startup-script handler. The script is
+# idempotent so it can self-heal: if Docker disappeared, it reinstalls;
+# if the systemd units were removed, they get rewritten.
+#
+# This file is a Terraform template -- $${...}-style placeholders are
+# interpolated by templatefile() in the gcp-valheim-vm module. Embedded
+# files use base64 encoding because heredoc handling of large multiline
+# blobs with quotes/dollar-signs is brittle otherwise.
+#
+# Why a startup-script and not cloud-init? GCP's standard Debian image
+# (debian-cloud/debian-12) does NOT include cloud-init. Setting
+# metadata.user-data on a VM running this image leaves the user-data
+# blob unprocessed forever. metadata.startup-script is the canonical
+# mechanism Debian-on-GCE honors via google-guest-agent.
+#
+# Boot sequence:
+#   1. Install Docker (Debian official) -- on first boot only; subsequent
+#      boots skip this if `docker` is already on PATH.
+#   2. Format (first boot only) and mount the persistent data disk.
+#   3. Drop docker-compose, fetch-secrets script, and systemd units in
+#      place from base64-encoded blobs (overwriting on every boot so a
+#      template edit propagates after the next reboot).
+#   4. Enable + start the systemd units. valheim-fetch-secrets runs first
+#      as a Requires= dep of valheim.service.
+#
+# Logs land at /var/log/valheim-startup-script.log AND in the journal
+# under unit `google-startup-scripts.service`.
+
+set -euxo pipefail
+exec > >(tee -a /var/log/valheim-startup-script.log) 2>&1
+
+echo "=== Valheim startup-script begin: $(date -u +%FT%TZ) ==="
+
+# 1. Install Docker if missing. Resilient: re-runs on a fresh VM image
+#    or after a manual `apt purge docker-*`. Fast on subsequent boots
+#    because the `command -v` short-circuit avoids hitting apt at all.
+if ! command -v docker >/dev/null 2>&1; then
+  echo "Docker missing; installing from Debian's official repo."
+  apt-get update
+  DEBIAN_FRONTEND=noninteractive apt-get install -y \
+    ca-certificates curl gnupg python3 jq
+
+  install -m 0755 -d /etc/apt/keyrings
+  curl -fsSL https://download.docker.com/linux/debian/gpg \
+    | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+  chmod a+r /etc/apt/keyrings/docker.gpg
+
+  echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian $(. /etc/os-release && echo $VERSION_CODENAME) stable" \
+    > /etc/apt/sources.list.d/docker.list
+
+  apt-get update
+  DEBIAN_FRONTEND=noninteractive apt-get install -y \
+    docker-ce docker-ce-cli containerd.io docker-compose-plugin
+fi
+
+systemctl enable --now docker
+
+# 2. Drop runtime artifacts. Overwrite every boot so a TF template edit
+#    that flows through metadata reaches disk after the next reboot.
+mkdir -p /opt/valheim /opt/valheim/scripts /opt/valheim/data /etc/valheim
+
+base64 -d > /opt/valheim/docker-compose.yml <<'__VALHEIM_BLOB_EOF__'
+${base64encode(docker_compose)}
+__VALHEIM_BLOB_EOF__
+chmod 0644 /opt/valheim/docker-compose.yml
+
+base64 -d > /opt/valheim/scripts/fetch-secrets.sh <<'__VALHEIM_BLOB_EOF__'
+${base64encode(fetch_secrets_sh)}
+__VALHEIM_BLOB_EOF__
+chmod 0750 /opt/valheim/scripts/fetch-secrets.sh
+
+base64 -d > /etc/systemd/system/valheim.service <<'__VALHEIM_BLOB_EOF__'
+${base64encode(valheim_service)}
+__VALHEIM_BLOB_EOF__
+chmod 0644 /etc/systemd/system/valheim.service
+
+base64 -d > /etc/systemd/system/valheim-fetch-secrets.service <<'__VALHEIM_BLOB_EOF__'
+${base64encode(valheim_fetch_secrets_service)}
+__VALHEIM_BLOB_EOF__
+chmod 0644 /etc/systemd/system/valheim-fetch-secrets.service
+
+# world.env: plain text since templatefile already substituted the values.
+# Single-quoted heredoc so bash doesn't try to re-expand anything (the
+# var values landed literal after templatefile()).
+cat > /etc/valheim/world.env <<'__VALHEIM_BLOB_EOF__'
+SERVER_NAME=${server_name}
+WORLD_NAME=${world_name}
+__VALHEIM_BLOB_EOF__
+
+echo "${data_disk_device}" > /etc/valheim/.disk-id
+
+# 3. Mount the persistent data disk. Format on first boot only --
+#    blkid returns non-zero if the device has no filesystem yet.
+DEVICE=$(cat /etc/valheim/.disk-id)
+if ! blkid "$DEVICE" >/dev/null 2>&1; then
+  echo "Formatting fresh data disk at $DEVICE."
+  mkfs.ext4 -F -L valheim-data "$DEVICE"
+fi
+grep -q "$DEVICE" /etc/fstab \
+  || echo "$DEVICE /opt/valheim/data ext4 defaults,nofail 0 2" >> /etc/fstab
+mount -a
+
+# lloesche/valheim-server runs as UID 1000 inside the container.
+chown -R 1000:1000 /opt/valheim/data
+
+# 4. Reload + enable + start systemd units. All idempotent: re-running
+#    enable/start on an already-running unit is a no-op.
+systemctl daemon-reload
+systemctl enable valheim-fetch-secrets.service
+systemctl enable --now valheim.service
+
+echo "=== Valheim startup-script complete: $(date -u +%FT%TZ) ==="

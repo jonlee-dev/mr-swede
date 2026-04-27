@@ -57,7 +57,7 @@
    → fetches `SERVER_PASS` from Secret Manager, writes `/etc/valheim/secret.env`
    → `docker compose up` reads `world.env` + `secret.env`
 
-The cloud-init blob is rendered by `templatefile()` with the four runtime artifacts (`server/docker-compose.yml`, `server/scripts/*`) inlined as base64. Re-rendering triggers no VM replacement — `lifecycle.ignore_changes` deliberately drops `metadata.user-data` so the persistent disk survives `server/` edits.
+The startup-script is rendered by `templatefile()` with the four runtime artifacts (`server/docker-compose.yml`, `server/scripts/*`) inlined as base64. The metadata key is `startup-script` (not `user-data`/cloud-init) because GCP's standard Debian image doesn't include cloud-init -- google-guest-agent runs the startup-script on every boot. The script is idempotent; `terraform apply` pushes new template content in-place, and the next reboot picks it up. No VM replacement needed.
 
 ## Key interface boundaries
 

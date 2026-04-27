@@ -2,7 +2,7 @@
 
 Provisions a single Valheim dedicated server on Google Compute Engine,
 including networking, persistent storage, secret plumbing, and the
-cloud-init that bootstraps Docker + the lloesche/valheim-server image.
+startup-script that bootstraps Docker + the lloesche/valheim-server image.
 
 ## What this module creates
 
@@ -56,14 +56,15 @@ the VM picks up the new value (`fetch-secrets.sh` always reads `latest`).
 - **Two-disk split.** Boot disk is ephemeral; world data lives on a
   separately-attached `pd-balanced` disk with `prevent_destroy`. Recovery
   from a corrupted boot disk is "detach data disk, reattach to a new VM."
-- **Cloud-init via `templatefile()`.** The runtime artifacts in
+- **Startup-script via `templatefile()`.** The runtime artifacts in
   [`server/`](../../../server/) stay as standalone files (lintable,
   testable, AWS-portable). Terraform only concatenates them into a
-  user-data blob at apply time.
-- **`ignore_changes = [metadata.user-data]`.** Cloud-init runs once at
-  first boot. If we re-rendered the user-data on every apply, Terraform
-  would force VM replacement on every `server/` edit -- killing the
-  point of the persistent disk.
+  bash blob at apply time.
+- **No `ignore_changes` on metadata.** Unlike cloud-init (one-shot),
+  the startup-script runs on every boot, so we WANT TF to push
+  template edits through to the metadata. The next `gcloud compute
+  instances reset` picks them up. Metadata updates are in-place; the
+  VM is not replaced and the data disk attachment is preserved.
 - **Secret value not in Terraform.** The secret container is in TF; the
   value is not. State files leak too easily.
 

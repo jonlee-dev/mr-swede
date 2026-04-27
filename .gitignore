@@ -76,6 +76,7 @@ cookies.txt
 # Terraform
 .terraform/
 .terraform.lock.hcl
+.terraform-output/
 *.tfstate
 *.tfstate.*
 *.tfplan
