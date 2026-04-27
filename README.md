@@ -105,13 +105,13 @@ CI runs `fmt → validate → plan` on every PR touching `infra/**` and runs `ap
 
 | Component | ~Monthly |
 |---|---|
-| Cloud Run bot (min-instances=1, throttled) | $3–5 |
+| Cloud Run bot (min-instances=1, CPU always-on) | $15–20 |
 | Valheim VM (e2-standard-2, stopped most of the time) | $5–10 |
 | Persistent disk (20GB pd-balanced) | ~$2 |
-| Snapshots + GCS backups (Phase 2) | <$1 |
-| **Total** | **~$10–18** |
+| Snapshots + GCS backups | <$1 |
+| **Total** | **~$22–33** |
 
-The dominant cost is the VM running 24/7. Phase 7's idle watcher is what brings the bill down by stopping it after 30 min of zero players.
+The two big costs are the bot's always-on CPU and the VM running 24/7. The VM is what an eventual idle watcher would bring down. The bot uses `cpu_idle = false` because Discord delivers slash commands over a WebSocket gateway (not over Cloud Run's HTTP port) — a CPU-throttled service starves the worker thread doing TLS handshakes from `/valheim *` calls. See [`infra/modules/gcp-bot-runtime/service.tf`](infra/modules/gcp-bot-runtime/service.tf) for the full reasoning.
 
 ---
 

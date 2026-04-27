@@ -132,11 +132,13 @@ After `apply`:
 
 | Component | Monthly |
 |---|---|
-| Cloud Run, min=1 throttled, 512Mi/1vCPU | ~$3-5 |
+| Cloud Run, min=1 always-on CPU, 512Mi/1vCPU | ~$15-20 |
 | Artifact Registry, ~1GB image + churn | <$1 |
 | Cloud Build, ~10 builds/month | $0 (under free tier) |
 | Secret Manager, 2 active secret versions | <$0.06 |
-| **Total bot runtime** | **~$4-6** |
+| **Total bot runtime** | **~$15-21** |
+
+`cpu_idle = false` (always-on CPU) is required for this bot, not optional. discord.py uses a WebSocket gateway, so slash commands arrive as events on a long-lived outbound connection -- not as HTTP requests to the Cloud Run port. Under throttled mode, the worker thread doing the TLS handshake to compute.googleapis.com from `/valheim *` gets starved and the connection EOFs mid-handshake. See [service.tf](service.tf) for the full reasoning.
 
 The dominant ongoing cost across the whole project is still the
 Valheim VM + disks; see [../gcp-valheim-vm/README.md](../gcp-valheim-vm/README.md).

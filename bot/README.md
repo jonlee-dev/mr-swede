@@ -70,14 +70,14 @@ After first deploy, apply cost-optimized settings (one-shot):
 ```bash
 gcloud run services update mr-swede \
   --region=us-central1 \
-  --cpu-throttling --cpu-boost \
+  --no-cpu-throttling --cpu-boost \
   --memory=512Mi --cpu=1 \
   --min-instances=1 --max-instances=1 \
   --timeout=3600 \
   --set-env-vars="ENV=production,LOG_FORMAT=json,DISCORD_BOT_NAME=mr-swede,VALHEIM_INSTANCE_NAME=valheim-server,VALHEIM_ZONE=us-central1-a"
 ```
 
-`min-instances=1` is mandatory — Discord disconnects sessions that idle for more than ~60s, and the Cloud Run CPU-throttled cost of one warm instance is ~$3-5/month.
+`min-instances=1` is mandatory — Discord disconnects sessions that idle for more than ~60s. CPU is allocated continuously (`--no-cpu-throttling`) because the bot does most of its work over the Discord WebSocket gateway, not over Cloud Run's HTTP port; throttled mode starves outbound TLS handshakes from `/valheim *` calls. Cost: ~$15-20/month.
 
 ---
 

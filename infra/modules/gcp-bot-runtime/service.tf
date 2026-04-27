@@ -63,11 +63,19 @@ resource "google_cloud_run_v2_service" "bot" {
           memory = var.memory
         }
 
-        # CPU throttling: only bill when processing requests.
-        # cpu_idle = true means the CPU is throttled when idle.
-        # startup_cpu_boost gives a temporary CPU bump during cold start
-        # so discord.py finishes its handshake quickly.
-        cpu_idle          = true
+        # cpu_idle = false means CPU is allocated continuously, not just
+        # during request processing. The bot does most of its work
+        # OUTSIDE of incoming HTTP requests:
+        #   - Discord gateway WebSocket heartbeats every ~41s.
+        #   - Slash-command handlers fire from gateway messages, not
+        #     from the Cloud Run port.
+        #   - Outbound HTTPS calls to compute.googleapis.com from the
+        #     /valheim cog -- those need CPU to complete TLS handshakes.
+        # Under cpu_idle=true the worker thread doing the TLS handshake
+        # gets starved and the connection EOFs mid-handshake.
+        # Cost goes from ~$3-5/mo (throttled) to ~$15-20/mo (always-on),
+        # but throttled mode is a known anti-pattern for always-on bots.
+        cpu_idle          = false
         startup_cpu_boost = true
       }
 
