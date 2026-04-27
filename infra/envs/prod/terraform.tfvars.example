@@ -9,3 +9,8 @@ github_repo  = "mr-swede"
 # without forcing VM replacement (the bot rewrites /etc/valheim/world.env).
 valheim_server_name   = "mr-swede-valheim"
 valheim_initial_world = "default"
+
+# Discord guild ID for instant slash-command sync. Leave empty for prod
+# (commands sync globally; ~1hr propagation). Set to a test-server ID
+# during dev for instant sync.
+# discord_guild_id = "123456789012345678"

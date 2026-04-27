@@ -49,9 +49,18 @@ options:
   substitutionOption: ALLOW_LOOSE
 
 substitutions:
-  _AR_HOSTNAME: us-east4-docker.pkg.dev
+  # Region defaults match infra/modules/gcp-bot-runtime: us-central1, the same
+  # region as the Valheim VM. Pre-v3.1 the service lived in us-east4; the
+  # us-east4 service should be deleted by hand after the new us-central1
+  # one is healthy.
+  #
+  # The trigger CAN override these in the GCP console -- but the new
+  # trigger is created by Terraform with these values pre-set
+  # (see infra/modules/gcp-bot-runtime/trigger.tf). Console overrides
+  # would drift from the TF-managed trigger; don't set them.
+  _AR_HOSTNAME: us-central1-docker.pkg.dev
   _AR_PROJECT_ID: mr-swede
   _AR_REPOSITORY: cloud-run-source-deploy
-  _DEPLOY_REGION: us-east4
+  _DEPLOY_REGION: us-central1
   _PLATFORM: managed
   _SERVICE_NAME: mr-swede

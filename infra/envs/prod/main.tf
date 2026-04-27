@@ -1,8 +1,10 @@
 # Root orchestration for the prod environment.
 #
-# Phase 0.5 — bootstrap: state bucket, APIs, Workload Identity Federation.
-# Phase 1   — Valheim VM: VPC, firewall, persistent disk, server password.
-# Later phases (2, 3, 7) will add backups, bot runtime, and the idle watcher.
+#   bootstrap   — state bucket, APIs, Workload Identity Federation.
+#   valheim_vm  — VPC, firewall, persistent disk, server password.
+#   bot_runtime — Cloud Run service, Cloud Build trigger, AR repo, IAM.
+#
+# Backups module and the idle watcher will land in their own modules later.
 
 module "bootstrap" {
   source = "../../modules/gcp-bootstrap"
@@ -24,6 +26,22 @@ module "valheim_vm" {
   # The VM module reads project APIs (compute, secretmanager, iap) that
   # bootstrap turns on. Make the dependency explicit so the first apply
   # doesn't race the API enablement.
+  depends_on = [module.bootstrap]
+}
+
+module "bot_runtime" {
+  source = "../../modules/gcp-bot-runtime"
+
+  project_id                 = var.project_id
+  region                     = var.region
+  valheim_instance_self_link = module.valheim_vm.instance_self_link
+  github_owner               = var.github_owner
+  github_repo                = var.github_repo
+  discord_guild_id           = var.discord_guild_id
+
+  # Same dependency reasoning as valheim_vm: bootstrap enables the run,
+  # cloudbuild, and artifactregistry APIs that this module immediately
+  # consumes.
   depends_on = [module.bootstrap]
 }
 
@@ -69,4 +87,33 @@ output "valheim_password_secret_id" {
 output "valheim_vm_service_account_email" {
   value       = module.valheim_vm.vm_service_account_email
   description = "Runtime identity of the Valheim VM. Grant additional access here, never project-wide."
+}
+
+###############################################################################
+# Surface bot runtime outputs (Cloud Run URL, secret path, AR repo).
+###############################################################################
+
+output "bot_service_url" {
+  value       = module.bot_runtime.service_url
+  description = "Cloud Run URL of the bot. `curl <url>/health` to smoke-test."
+}
+
+output "bot_service_account_email" {
+  value       = module.bot_runtime.service_account_email
+  description = "Runtime identity of the bot service. Grant any additional access here, never project-wide."
+}
+
+output "bot_artifact_registry_repository" {
+  value       = module.bot_runtime.artifact_registry_repository
+  description = "Container path Cloud Build pushes images to. Mirrors the cloudbuild.yaml _AR_HOSTNAME/_AR_PROJECT_ID/_AR_REPOSITORY substitutions."
+}
+
+output "bot_discord_secret_path" {
+  value       = module.bot_runtime.discord_secret_path
+  description = "DISCORD_SECRET_PATH as wired into the Cloud Run service. Keep in sync with bot/env.example."
+}
+
+output "bot_cloudbuild_trigger_id" {
+  value       = module.bot_runtime.cloudbuild_trigger_id
+  description = "ID of the master-branch trigger. Use with `gcloud builds triggers run` for manual rebuilds."
 }

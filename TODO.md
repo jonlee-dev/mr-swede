@@ -1,107 +1,121 @@
-# Mr. Swede - setup & TODO
+# Mr. Swede — setup & TODO
 
-This is the manual-step checklist for standing up the Discord bot and the GCP resources it depends on. Code-level tasks live as comments in `bot/src/cogs/valheim.py` and `bot/src/services/compute.py`.
+The manual checklist for standing up Mr. Swede on a fresh GCP project. Everything that can be in Terraform is — see [`infra/`](infra/). This file covers the click-ops prerequisites and the cutover steps that don't fit into `terraform apply`.
 
-For the Valheim VM infrastructure (Terraform, cloud-init, secrets), see [docs/bootstrap.md](docs/bootstrap.md). For day-to-day operations, see [docs/runbook.md](docs/runbook.md).
+For the Valheim VM specifically: [docs/bootstrap.md](docs/bootstrap.md) and [docs/runbook.md](docs/runbook.md).
 
 ---
 
-## Phase status
+## What's done, what's left
 
-| Phase | What | Status |
-|---|---|---|
-| 0 | Repo reorg into `bot/` + `infra/` | ✅ done |
-| 0.5 | One-time Terraform bootstrap (WIF + state bucket) | ✅ done |
-| 1 | Valheim VM + cloud-init + Secret Manager (Terraform) | ✅ done |
-| 2 | Bot prune (kill OW/music/Firestore) + scaffolds for Phase 3 | ✅ done |
-| 3 | Wire `/valheim status\|start\|stop` to GCE + A2S | ✅ done |
-| 7 | Idle watcher (Cloud Function or scheduled job) | ⏳ next |
+The bot is fully functional: `/valheim status|start|stop` is wired to GCE + a Steam A2S query. The infra is fully Terraform-managed across three modules: `gcp-bootstrap`, `gcp-valheim-vm`, `gcp-bot-runtime`.
+
+What's still ahead:
+
+- **us-east4 → us-central1 cutover.** The bot's running Cloud Run service is in us-east4 (pre-Terraform). The `gcp-bot-runtime` module creates a fresh greenfield service in us-central1. After the new service is healthy, delete the us-east4 one by hand.
+- **Idle watcher.** Cloud Scheduler + Cloud Function that polls the VM's A2S port and stops the VM after N minutes of zero players. Not started.
 
 ---
 
 ## Secrets in GSM
 
-| Secret | Keys | Purpose |
+| Secret | Created by | Value seeded by |
 |---|---|---|
-| `discord-bot-secrets` | `mr-swede.id`, `mr-swede.token`, `mr-swede.public_key` | Discord bot token |
-| `valheim-server-password` | _(no keys, just a payload)_ | Game server password — seeded out-of-band |
+| `discord-bot-secrets` | TF module `gcp-bot-runtime` (imported on first apply — pre-existed click-ops deploy) | Out-of-band: `gcloud secrets versions add discord-bot-secrets --data-file=-` |
+| `valheim-server-password` | TF module `gcp-valheim-vm` | Out-of-band: see [docs/bootstrap.md](docs/bootstrap.md) |
 
-The `discord-bot-secrets` value is JSON; the `mr-swede` key holds the credentials for this bot. The `SecretManager` class in [bot/src/config/secrets.py](bot/src/config/secrets.py) reads it with both nested and dot-notation lookups.
+Both secrets follow the same pattern: Terraform owns the container and the IAM bindings, but the value is seeded out-of-band so the payload never enters TF state.
 
-The `valheim-server-password` secret container is created by Terraform but its value is seeded out-of-band — never put it in Terraform state. See [docs/bootstrap.md](docs/bootstrap.md) for the seeding command.
+The `discord-bot-secrets` JSON layout (preferred, nested-object form):
+
+```json
+{
+  "mr-swede": {
+    "id": "123456789",
+    "token": "your-bot-token",
+    "public_key": "your-public-key"
+  }
+}
+```
+
+The bot also accepts dot-notation keys (`"mr-swede.token": "..."`) for backwards compatibility — see [bot/src/config/secrets.py](bot/src/config/secrets.py).
 
 ---
 
-## GCP setup
+## First-time GCP setup
 
-### APIs to enable
+### 1. Run the bootstrap once
+
+[docs/bootstrap.md](docs/bootstrap.md) walks through the one-shot Terraform bootstrap that turns on APIs, creates the state bucket, sets up Workload Identity Federation, and creates the `terraform-ci` SA. After it succeeds you don't need local `gcloud` for routine TF.
+
+### 2. Connect Cloud Build to GitHub (one-time, manual)
+
+The OAuth handshake that lets Cloud Build read this repo can't be done in Terraform — it's a GitHub App install. In the GCP console:
+
+> **Cloud Build → Triggers → Connect Repository → GitHub (Cloud Build GitHub App) → authorize `jonlee-dev/mr-swede`**
+
+After this is done, the `google_cloudbuild_trigger` in `gcp-bot-runtime` works on the next apply.
+
+### 3. Apply `gcp-bot-runtime` (one-time)
+
+The first apply needs an extra step: import the existing `discord-bot-secrets` GSM secret so TF doesn't try to re-create it.
 
 ```bash
-gcloud services enable \
-  secretmanager.googleapis.com \
-  compute.googleapis.com \
-  run.googleapis.com \
-  artifactregistry.googleapis.com \
-  cloudresourcemanager.googleapis.com \
-  iamcredentials.googleapis.com
+PROJECT_ID="$(gcloud config get-value project)"
+cd infra/envs/prod
+
+terraform plan        # Sanity check: should see new resources for module.bot_runtime
+terraform import \
+  module.bot_runtime.google_secret_manager_secret.discord_bot_secrets \
+  "projects/${PROJECT_ID}/secrets/discord-bot-secrets"
+terraform plan        # discord_bot_secrets should now show "no changes" (or only label drift)
+terraform apply
 ```
 
-### Service account for the Cloud Run bot
+If the post-import plan shows a forced replacement on `discord_bot_secrets`, the live secret's replication block doesn't match what `infra/modules/gcp-bot-runtime/secret.tf` declares. Edit that file to match (most likely: change `user_managed { ... }` to `automatic {}`).
+
+### 4. Trigger the first Cloud Build
 
 ```bash
-PROJECT_ID=$(gcloud config get-value project)
-SA_EMAIL="mr-swede-sa@${PROJECT_ID}.iam.gserviceaccount.com"
-
-gcloud iam service-accounts create mr-swede-sa \
-  --display-name="Mr. Swede Discord Bot"
-
-# Read Discord token from GSM
-gcloud projects add-iam-policy-binding $PROJECT_ID \
-  --member="serviceAccount:${SA_EMAIL}" \
-  --role="roles/secretmanager.secretAccessor"
-
-# Phase 3: control the Valheim VM
-gcloud projects add-iam-policy-binding $PROJECT_ID \
-  --member="serviceAccount:${SA_EMAIL}" \
-  --role="roles/compute.instanceAdmin.v1"
+gcloud builds triggers run mr-swede-master --branch=master
 ```
 
-The `compute.instanceAdmin.v1` binding is wider than what we need for start/stop alone. When Phase 3 lands, narrow this to a custom role with just `compute.instances.start`, `compute.instances.stop`, `compute.instances.get`, and `compute.zoneOperations.get`.
+This replaces the `cloudrun/hello` placeholder image with the real bot. The first build takes ~5 minutes (multi-stage Docker + dependency install).
+
+### 5. Smoke test
+
+```bash
+SERVICE_URL="$(terraform -chdir=infra/envs/prod output -raw bot_service_url)"
+curl "${SERVICE_URL}/health"
+# {"status": "starting", "bot_ready": false}     ← right after deploy
+# {"status": "healthy", "bot_ready": true, ...}  ← once gateway connects
+```
+
+Then in Discord: `/ping`, `/info`, `/valheim status`.
+
+### 6. Delete the old us-east4 service (manual)
+
+```bash
+gcloud run services delete mr-swede --region=us-east4
+gcloud artifacts repositories delete cloud-run-source-deploy --location=us-east4 --quiet
+```
+
+These never lived in Terraform. Once the new us-central1 service is healthy, the old ones are dead weight.
 
 ---
 
 ## Discord developer portal
 
 1. Open the [Discord Developer Portal](https://discord.com/developers/applications).
-2. Application → **Bot** → uncheck all privileged intents. The slash-only bot doesn't need MESSAGE CONTENT, SERVER MEMBERS, or PRESENCE.
-3. Application → **OAuth2 → URL Generator**:
+2. **Bot** → uncheck all privileged intents. The slash-only bot doesn't need MESSAGE CONTENT, SERVER MEMBERS, or PRESENCE.
+3. **OAuth2 → URL Generator**:
    - Scopes: `bot`, `applications.commands`
    - Bot permissions: `Send Messages`, `Embed Links`, `Use Slash Commands`
 4. Use the generated URL to invite the bot to your server.
 
 ---
 
-## Cloud Run deployment (after Phase 2)
-
-```bash
-gcloud run deploy mr-swede \
-  --source bot/ \
-  --region=us-central1 \
-  --service-account=mr-swede-sa@${PROJECT_ID}.iam.gserviceaccount.com \
-  --cpu-throttling --cpu-boost \
-  --memory=512Mi --cpu=1 \
-  --min-instances=1 --max-instances=1 \
-  --timeout=3600 \
-  --set-env-vars="ENV=production,LOG_FORMAT=json,DISCORD_BOT_NAME=mr-swede,VALHEIM_INSTANCE_NAME=valheim-server,VALHEIM_ZONE=us-central1-a"
-```
-
-`min-instances=1` is required — Discord drops gateway sessions that go idle. CPU throttling keeps the warm-instance bill at ~$3-5/month.
-
----
-
 ## Local development
-
-All `poetry`, `pytest`, and `python -m src.main` commands run from `bot/`.
 
 ```bash
 cd bot
@@ -114,30 +128,35 @@ If you don't have GSM access, set `DISCORD_TOKEN` in `bot/.env` to skip GSM enti
 
 ---
 
-## Post-deployment checklist
+## Post-cutover checklist
 
-- [ ] Bot service account has `secretmanager.secretAccessor`
-- [ ] Bot service account has `compute.instanceAdmin.v1` (or narrower equivalent — see above)
-- [ ] Bot is online and responds to `/ping`
-- [ ] `/info` shows the right version
-- [ ] Cloud Run `/health` returns `{"status": "healthy", "bot_ready": true}`
+- [ ] Cloud Build trigger `mr-swede-master` exists and points at `master`
+- [ ] AR repo `cloud-run-source-deploy` exists in us-central1 with at least one image
+- [ ] Cloud Run service `mr-swede` (us-central1) responds 200 on `/health`
+- [ ] Bot is online and responds to `/ping` in Discord
+- [ ] `/info` shows version 3.x and the three Valheim subcommands
+- [ ] `/valheim status` reports VM state correctly
+- [ ] `/valheim start` succeeds (RUNNING within ~30s)
+- [ ] `/valheim stop` succeeds (TERMINATED within ~30s)
 - [ ] Logs visible in Cloud Logging with structured JSON
-- [ ] (After Phase 3) `/valheim status` reports VM state correctly
+- [ ] Old us-east4 Cloud Run service deleted
+- [ ] Old us-east4 AR repo deleted
 
 ---
 
 ## Troubleshooting
 
-**Bot won't connect.** Check `/health` — `bot_ready: false` with a non-empty `error` field tells you exactly why. Most often: missing `DISCORD_TOKEN` env var or GSM permissions.
+**Bot won't connect.** Check `/health` — `bot_ready: false` with a non-empty `error` field tells you exactly why. Most often: missing `DISCORD_TOKEN` env var locally, or `DISCORD_SECRET_PATH` doesn't point at a readable secret.
 
-**Slash commands don't appear.** Either you set `DISCORD_GUILD_ID` to the wrong guild, or you're waiting on global propagation (~1hr after first sync). Set `DISCORD_GUILD_ID` to your test server for instant sync during dev.
+**Slash commands don't appear.** Either you set `DISCORD_GUILD_ID` to the wrong guild, or you're waiting on global propagation (~1hr after first sync). For dev, set `DISCORD_GUILD_ID` to your test server for instant sync.
 
-**`/valheim status` says "not implemented yet".** That's intentional — Phase 2 left these as scaffolds. Phase 3 wires them up.
+**`/valheim start` fails with PermissionDenied.** The bot SA is missing `compute.instanceAdmin.v1` on the Valheim instance. Re-run `terraform apply` — the binding is in `infra/modules/gcp-bot-runtime/instance_iam.tf`.
 
-**GCS permissions errors.** Almost always the bot's service account is missing `secretmanager.secretAccessor` on `discord-bot-secrets` or `compute.instanceAdmin.v1` on the VM project. Check with:
+**Cloud Build fails on first run with "Permission denied to push to AR repo".** The Cloud Build SA hasn't been granted `roles/artifactregistry.writer` on the new repo. The TF module grants this — make sure the apply succeeded fully.
+
+**Secret access errors in logs.** Confirm the bot SA has the secret-scoped `secretmanager.secretAccessor` binding:
 
 ```bash
-gcloud projects get-iam-policy $PROJECT_ID \
-  --flatten="bindings[].members" \
+gcloud secrets get-iam-policy discord-bot-secrets \
   --filter="bindings.members:mr-swede-sa@*"
 ```

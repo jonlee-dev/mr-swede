@@ -37,3 +37,9 @@ variable "valheim_initial_world" {
   type        = string
   default     = "default"
 }
+
+variable "discord_guild_id" {
+  description = "Discord guild ID for instant slash-command sync. Empty (default) = global sync (~1hr propagation). Override locally for fast iteration."
+  type        = string
+  default     = ""
+}

@@ -20,10 +20,10 @@ bot/
 │   │   └── logging.py     # structlog setup
 │   ├── cogs/
 │   │   ├── diagnostics.py # /ping, /info
-│   │   └── valheim.py     # /valheim status|start|stop  (Phase 3 stubs)
+│   │   └── valheim.py     # /valheim status|start|stop
 │   ├── services/
-│   │   ├── compute.py     # GCE start/stop/describe (Phase 3 stubs)
-│   │   └── server_query.py # Steam A2S query        (Phase 3 stubs)
+│   │   ├── compute.py     # GCE start/stop/describe via google-cloud-compute
+│   │   └── server_query.py # Steam A2S query via python-a2s
 │   └── utils/helpers.py
 ├── tests/
 │   ├── unit/              # Fast, hermetic tests
@@ -91,6 +91,7 @@ gcloud run services update mr-swede \
 | `GCP_PROJECT_ID` | auto-detect | Cloud Run sets `GOOGLE_CLOUD_PROJECT`, picked up automatically |
 | `VALHEIM_ZONE` | `us-central1-a` | Where the Valheim VM lives |
 | `VALHEIM_INSTANCE_NAME` | `valheim-server` | GCE instance name to control |
+| `DISCORD_SECRET_PATH` | _(auto-built)_ | Full GSM resource path of the Discord secret. Set by Terraform on the Cloud Run service. Locally, the bot constructs `projects/<GCP_PROJECT_ID>/secrets/discord-bot-secrets/versions/latest` if unset. |
 | `DISCORD_TOKEN` | _(unset)_ | Local-dev fallback when GSM is unreachable |
 | `HOST` / `PORT` | `0.0.0.0` / `8080` | Cloud Run sets `PORT` |
 | `LOG_LEVEL` / `LOG_FORMAT` | `INFO` / `json` | `console` for local dev |
@@ -109,15 +110,15 @@ Dot-notation flat keys (`"mr-swede.token": "..."`) are also accepted for backwar
 
 ## Commands
 
-| Command | Status | What it does |
-|---|---|---|
-| `/ping` | implemented | Latency check |
-| `/info` | implemented | Bot version + command list |
-| `/valheim status` | scaffolded | Will report VM state + player count once Phase 3 lands |
-| `/valheim start` | scaffolded | Will start the GCE VM |
-| `/valheim stop` | scaffolded | Will stop the GCE VM |
+| Command | What it does |
+|---|---|
+| `/ping` | Latency check |
+| `/info` | Bot version + command list |
+| `/valheim status` | Reports VM state + Steam-A2S player count |
+| `/valheim start` | Starts the GCE VM (idempotent — safe if already running) |
+| `/valheim stop` | Stops the GCE VM (idempotent) |
 
-The `/valheim` commands currently respond with "not implemented yet". Phase 3 wires them to `src.services.compute` and `src.services.server_query`.
+The `/valheim` commands call into `src.services.compute` (start/stop/describe via `google-cloud-compute`) and `src.services.server_query` (Steam A2S via `python-a2s`).
 
 ---
 

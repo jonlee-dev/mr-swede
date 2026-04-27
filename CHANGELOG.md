@@ -5,6 +5,87 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.1.0] - 2026-04-26
+
+### Wire `/valheim *` to GCE + Terraform-manage the bot runtime
+
+Two big landings: the Phase-2 stubs are now real implementations (the
+bot actually starts and stops the VM), and the Cloud Run deployment
+itself is now Terraform-managed via a new `gcp-bot-runtime` module
+instead of click-ops.
+
+### Added
+
+- **`/valheim status|start|stop` actually work.** `services/compute.py`
+  implements `describe_instance`/`start_instance`/`stop_instance` against
+  `google-cloud-compute`. `services/server_query.py` implements
+  `query(host, port)` against `python-a2s`. Both raise typed errors that
+  the cog converts into user-facing messages.
+- **`infra/modules/gcp-bot-runtime/`** — eight `.tf` files plus a README
+  covering: bot SA + project IAM, instance-scoped `compute.instanceAdmin.v1`,
+  Discord-secret container + accessor, Artifact Registry repo, Cloud Run
+  v2 service, Cloud Build → AR/Run/SA bindings, GitHub-trigger config.
+  Wired into `infra/envs/prod/main.tf` after `module.valheim_vm`.
+- **`cloudbuild.yaml`** at the repo root — Build → Push → Deploy steps,
+  driven by the trigger's substitutions. Replaces the trigger's old
+  inline build config that hard-coded `Dockerfile` at the repo root and
+  broke when v3.0.0 moved everything into `bot/`.
+- **`DISCORD_SECRET_PATH`** env var contract — lets the bot find the
+  GSM secret without hardcoding the project number. Set automatically
+  by the TF module on the Cloud Run service; documented in both READMEs.
+- **`discord_guild_id`** TF variable on the prod env, threaded into the
+  bot service. Empty by default (= global slash-command sync); override
+  in `terraform.tfvars` for instant per-guild sync during dev.
+
+### Changed
+
+- **Region: us-east4 → us-central1.** The new Terraform-managed Cloud Run
+  service is greenfield in us-central1, matching every other resource.
+  `cloudbuild.yaml` substitutions flipped accordingly. The old us-east4
+  service stays running until cutover; deletion is a manual `gcloud run
+  services delete` step (never lived in TF).
+- **Bot SA scope tightened.** Compute access is now instance-scoped
+  (`compute.instanceAdmin.v1` on the Valheim VM) instead of the
+  project-wide binding suggested in TODO.md prior. Secret access stays
+  secret-scoped.
+- **`__version__` → `3.1.0`** in `bot/src/__init__.py` and
+  `bot/pyproject.toml`.
+- **Docs.** Dropped the "Phase X" status tables from `README.md` and
+  `TODO.md` — phase numbering was a roadmap-tracking concept that
+  outlived its usefulness once everything-but-the-idle-watcher shipped.
+  `docs/architecture.md` updated to reflect the third TF module and to
+  describe `compute.py`/`server_query.py` as real impls (not stubs).
+- **`TODO.md`** rewritten around the cutover procedure and the
+  `terraform import` step required on first apply (the GSM secret
+  pre-existed Terraform, so we adopt-not-create).
+
+### Migration (one-time, on the project that hosts the bot)
+
+1. **Connect Cloud Build to GitHub** in the GCP console
+   (`Cloud Build → Triggers → Connect Repository → GitHub`). Required
+   prerequisite — TF cannot do the OAuth handshake.
+2. `terraform plan` — sanity-check the new `module.bot_runtime` resources.
+3. `terraform import module.bot_runtime.google_secret_manager_secret.discord_bot_secrets projects/<project>/secrets/discord-bot-secrets`
+   — adopt the existing GSM secret instead of duplicating it.
+4. `terraform apply`.
+5. Trigger the first build manually
+   (`gcloud builds triggers run mr-swede-master --branch=master`) to
+   replace the `cloudrun/hello` placeholder image with the real bot.
+6. Smoke test `/health` on the new us-central1 service URL, then in
+   Discord: `/ping`, `/valheim status`, `/valheim start`.
+7. Delete the old us-east4 service + AR repo by hand.
+
+Full instructions in [TODO.md](./TODO.md).
+
+### Out-of-scope
+
+- **No idle watcher yet.** The Valheim VM still bills 24/7 unless
+  someone runs `/valheim stop`. The Cloud Function that polls A2S and
+  stops the VM after N idle minutes is the next infra module.
+- **Backups module** is also still ahead.
+
+---
+
 ## [3.0.0] - 2026-04-26
 
 ### Pivot to Valheim-only scope

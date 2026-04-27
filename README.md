@@ -24,30 +24,29 @@ Bot-related Poetry / pytest / Docker commands run from inside [`bot/`](bot/). Te
 
 ---
 
-## Phase status
+## Status
 
-| Phase | What | Status |
-|---|---|---|
-| 0 | Repo reorg into `bot/` + `infra/` | done |
-| 0.5 | One-time Terraform bootstrap (WIF + state bucket) | done |
-| 1 | Valheim VM + cloud-init + Secret Manager (Terraform) | done |
-| 2 | Bot prune (kill OW/music/Firestore) + Phase-3 scaffolds | done |
-| 3 | Wire `/valheim status\|start\|stop` to GCE + A2S | done |
-| 7 | Idle watcher (Cloud Function or scheduled job) | next |
+The bot is fully functional. `/valheim status|start|stop` is wired to GCE and Steam A2S. The GCP infra is fully Terraform-managed across three modules:
 
-See [TODO.md](./TODO.md) for the manual setup checklist (Discord developer portal, GCP IAM, Cloud Run deploy command).
+- [`gcp-bootstrap`](infra/modules/gcp-bootstrap) — APIs, state bucket, Workload Identity Federation
+- [`gcp-valheim-vm`](infra/modules/gcp-valheim-vm) — VPC, firewall, persistent disk, VM, server-password GSM secret
+- [`gcp-bot-runtime`](infra/modules/gcp-bot-runtime) — Cloud Run service, Artifact Registry repo, Cloud Build trigger, IAM, Discord-secret container
+
+Still ahead: the **us-east4 → us-central1 cutover** (the TF-managed bot service is greenfield in us-central1; the old us-east4 service is deleted by hand) and a **Cloud-Function idle watcher** that polls the Valheim A2S port and stops the VM after N minutes of zero players.
+
+See [TODO.md](./TODO.md) for the cutover checklist and the manual prerequisites (Discord developer portal, Cloud Build ↔ GitHub OAuth).
 
 ---
 
 ## Commands
 
-| Command | Status | Description |
-|---|---|---|
-| `/ping` | implemented | Latency check |
-| `/info` | implemented | Bot version + loaded cog list |
-| `/valheim status` | implemented | Show VM state and player count |
-| `/valheim start` | implemented | Start the Valheim VM (idempotent) |
-| `/valheim stop` | implemented | Stop the Valheim VM (idempotent) |
+| Command | Description |
+|---|---|
+| `/ping` | Latency check |
+| `/info` | Bot version + loaded cog list |
+| `/valheim status` | Show VM state and Steam-A2S player count |
+| `/valheim start` | Start the Valheim VM (idempotent) |
+| `/valheim stop` | Stop the Valheim VM (idempotent) |
 
 ---
 
@@ -88,25 +87,7 @@ poetry run mypy src                   # type check
 
 ## Deployment
 
-### Cloud Run (the bot)
-
-```bash
-PROJECT_ID=$(gcloud config get-value project)
-
-gcloud run deploy mr-swede \
-  --source bot/ \
-  --region=us-central1 \
-  --service-account=mr-swede-sa@${PROJECT_ID}.iam.gserviceaccount.com \
-  --cpu-throttling --cpu-boost \
-  --memory=512Mi --cpu=1 \
-  --min-instances=1 --max-instances=1 \
-  --timeout=3600 \
-  --set-env-vars="ENV=production,LOG_FORMAT=json,DISCORD_BOT_NAME=mr-swede,VALHEIM_INSTANCE_NAME=valheim-server,VALHEIM_ZONE=us-central1-a"
-```
-
-`min-instances=1` is required — Discord drops gateway sessions that go idle. CPU throttling keeps the warm-instance bill at ~$3-5/month.
-
-### Terraform (everything else)
+The bot deploys via Cloud Build → Cloud Run, all Terraform-managed:
 
 ```bash
 cd infra/envs/prod
@@ -114,7 +95,11 @@ terraform plan
 terraform apply
 ```
 
+On `terraform apply`, [`infra/modules/gcp-bot-runtime`](infra/modules/gcp-bot-runtime) creates the Cloud Run service (with a `cloudrun/hello` placeholder image), the Artifact Registry repo, and the Cloud Build trigger. The first push to `master` (or `gcloud builds triggers run mr-swede-master --branch=master`) replaces the placeholder with the real bot image.
+
 CI runs `fmt → validate → plan` on every PR touching `infra/**` and runs `apply` on merge to `master` (gated by the `prod` GitHub Environment). Auth is via Workload Identity Federation — no JSON keys.
+
+**First-apply prerequisites and the `discord-bot-secrets` import step are documented in [TODO.md](./TODO.md#first-time-gcp-setup).** Reading that section before the first `terraform apply` is mandatory; the import has to happen between `plan` and `apply` or TF will try to create a duplicate of an already-existing GSM secret.
 
 ### Cost estimate
 
@@ -144,6 +129,7 @@ The dominant cost is the VM running 24/7. Phase 7's idle watcher is what brings 
 | `GCP_PROJECT_ID` | auto-detected | GCP project ID |
 | `VALHEIM_ZONE` | `us-central1-a` | Compute zone of the Valheim VM |
 | `VALHEIM_INSTANCE_NAME` | `valheim-server` | Instance name to control |
+| `DISCORD_SECRET_PATH` | auto-built from `GCP_PROJECT_ID` | Full GSM secret resource path (`projects/<num>/secrets/discord-bot-secrets/versions/latest`). Cloud Run gets this from Terraform; locally the bot builds a default. |
 | `HOST` | `0.0.0.0` | HTTP server bind address |
 | `PORT` | `8080` | HTTP server port |
 
@@ -201,8 +187,7 @@ mr-swede/
 │   └── modules/
 │       ├── gcp-bootstrap/               # APIs, TF state bucket, WIF
 │       ├── gcp-valheim-vm/              # VM, persistent disk, firewall, cloud-init
-│       ├── gcp-backups/                 # GCS bucket + snapshot schedule
-│       └── gcp-idle-watcher/            # Phase 7: scheduled VM auto-stop
+│       └── gcp-bot-runtime/             # Cloud Run service, AR repo, Cloud Build trigger, IAM
 │
 ├── server/                              # Files that run *inside* the Valheim VM
 │   ├── docker-compose.yml               # lloesche/valheim-server-docker
