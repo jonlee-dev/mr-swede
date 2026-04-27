@@ -120,13 +120,24 @@ resource "google_cloud_run_v2_service" "bot" {
   labels = var.labels
 
   lifecycle {
-    # Cloud Build owns the image after the bootstrap. Without this, every
-    # `terraform apply` after a fresh deploy would revert the running
-    # service back to the cloudrun/hello placeholder.
+    # Cloud Build owns the image and the revision-level labels after
+    # bootstrap. Without these ignores:
+    #   - every `terraform apply` after a fresh deploy would revert
+    #     the running service back to the cloudrun/hello placeholder.
+    #   - Cloud Build's per-deploy labels (commit-sha, gcb-build-id,
+    #     gcb-trigger-id, managed-by) would tug-of-war with TF: the
+    #     deploy adds them, the next plan strips them.
     ignore_changes = [
       template[0].containers[0].image,
+      template[0].labels,
       client,
       client_version,
+      # Cloud Run v2 has overlapping service-level (manual mode) and
+      # template-level (autoscaling) scaling blocks with identical
+      # field names. We drive scaling via the template block; the
+      # service-level one defaults to {manual=0, min=0} and shows up
+      # as endless drift if we don't ignore it.
+      scaling,
     ]
   }
 
@@ -134,4 +145,31 @@ resource "google_cloud_run_v2_service" "bot" {
     google_secret_manager_secret_iam_member.bot_can_read_discord_secrets,
     google_compute_instance_iam_member.bot_can_admin_valheim_vm,
   ]
+}
+
+###############################################################################
+# Public invocation (optional).
+#
+# Cloud Run v2 defaults to private: every request fails with 403 unless
+# the caller presents an identity token. That's annoying for smoke tests
+# of /health from curl, so we grant `roles/run.invoker` to allUsers by
+# default.
+#
+# What this exposes (all the public endpoints in bot/src/http.py):
+#   GET /         → {"status": "ok", "service": "mr-swede", "bot_name": "..."}
+#   GET /health   → {"status": "...", "bot_ready": bool, "guilds": N, "latency_ms": F}
+#   GET /metrics  → {"guilds": N, "latency_ms": F, "is_ready": bool}
+#
+# None of those leak identifiable info. Set var.allow_public_invocation
+# to false if you'd rather authenticate every probe.
+###############################################################################
+
+resource "google_cloud_run_v2_service_iam_member" "public_invoker" {
+  count = var.allow_public_invocation ? 1 : 0
+
+  project  = var.project_id
+  location = google_cloud_run_v2_service.bot.location
+  name     = google_cloud_run_v2_service.bot.name
+  role     = "roles/run.invoker"
+  member   = "allUsers"
 }

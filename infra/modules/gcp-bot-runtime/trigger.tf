@@ -27,6 +27,20 @@ resource "google_cloudbuild_trigger" "bot_master" {
   description = "Build and deploy ${var.service_name} on push to ${var.github_branch_regex}."
   filename    = "cloudbuild.yaml"
 
+  # GCP's 2024 default-SA change retired the legacy
+  # <project-number>@cloudbuild.gserviceaccount.com SA on new projects.
+  # Triggers that don't set service_account explicitly fail to create
+  # with HTTP 400 "invalid argument" because the API tries to default
+  # to a SA that no longer exists. Pin to the compute default SA --
+  # the same SA build_iam.tf grants run.admin / AR writer / actAs to.
+  service_account = "projects/${var.project_id}/serviceAccounts/${local.cloudbuild_sa_email}"
+
+  # Cloud Build API quirk: if service_account is set on the trigger,
+  # include_build_logs MUST also be set, or the create call fails with
+  # HTTP 400 "invalid argument". This isn't documented in the Terraform
+  # provider but matches the existing console-created trigger's shape.
+  include_build_logs = "INCLUDE_BUILD_LOGS_WITH_STATUS"
+
   github {
     owner = var.github_owner
     name  = var.github_repo

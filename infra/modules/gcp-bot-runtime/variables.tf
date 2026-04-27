@@ -85,6 +85,12 @@ variable "request_timeout_seconds" {
   default     = 3600
 }
 
+variable "allow_public_invocation" {
+  description = "Whether to grant `roles/run.invoker` to allUsers, making /, /health, /metrics publicly hittable. Default true so curl-based smoke tests work without an auth token. The endpoints leak only `bot_ready`, guild count, and gateway latency -- nothing identifiable. Flip to false to lock the service down; smoke tests then need `Authorization: Bearer $(gcloud auth print-identity-token)`."
+  type        = bool
+  default     = true
+}
+
 variable "labels" {
   description = "Labels applied to all resources for cost attribution."
   type        = map(string)
