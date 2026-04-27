@@ -45,6 +45,19 @@ module "bot_runtime" {
   depends_on = [module.bootstrap]
 }
 
+module "idle_watcher" {
+  source = "../../modules/gcp-idle-watcher"
+
+  project_id                 = var.project_id
+  region                     = var.region
+  valheim_instance_self_link = module.valheim_vm.instance_self_link
+  vm_controller_role_id      = module.bot_runtime.vm_controller_role_id
+
+  # bootstrap enables cloudfunctions/cloudscheduler/eventarc/pubsub APIs
+  # that this module consumes; bot_runtime owns the custom role we bind to.
+  depends_on = [module.bootstrap, module.bot_runtime]
+}
+
 ###############################################################################
 # Surface bootstrap outputs at the env level so humans running
 # `terraform output` can grab them without reaching into the module.
@@ -121,4 +134,28 @@ output "bot_cloudbuild_trigger_id" {
 output "vm_controller_role_id" {
   value       = module.bot_runtime.vm_controller_role_id
   description = "Custom role granting minimum compute perms on the Valheim VM. Consumed by the idle-watcher module."
+}
+
+###############################################################################
+# Surface idle-watcher outputs (function URL, scheduler job, state bucket).
+###############################################################################
+
+output "idle_watcher_function_name" {
+  value       = module.idle_watcher.function_name
+  description = "Cloud Function name. `gcloud functions logs read $name --region=us-central1` to inspect runs."
+}
+
+output "idle_watcher_scheduler_job_name" {
+  value       = module.idle_watcher.scheduler_job_name
+  description = "Cloud Scheduler job name. `gcloud scheduler jobs run $name --location=us-central1` fires it manually."
+}
+
+output "idle_watcher_state_bucket" {
+  value       = module.idle_watcher.state_bucket_name
+  description = "GCS bucket holding state.json (the empty-check counter)."
+}
+
+output "idle_watcher_service_account_email" {
+  value       = module.idle_watcher.service_account_email
+  description = "Watcher SA. Same custom compute role as the bot, instance-scoped to the Valheim VM."
 }

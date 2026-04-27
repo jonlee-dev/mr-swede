@@ -26,13 +26,12 @@ Bot-related Poetry / pytest / Docker commands run from inside [`bot/`](bot/). Te
 
 ## Status
 
-The bot is fully functional. `/valheim status|start|stop` is wired to GCE and Steam A2S. The GCP infra is fully Terraform-managed across three modules:
+The bot is fully functional. `/valheim status|start|stop` is wired to GCE and Steam A2S. The GCP infra is fully Terraform-managed across four modules:
 
 - [`gcp-bootstrap`](infra/modules/gcp-bootstrap) — APIs, state bucket, Workload Identity Federation
 - [`gcp-valheim-vm`](infra/modules/gcp-valheim-vm) — VPC, firewall, persistent disk, VM, server-password GSM secret
 - [`gcp-bot-runtime`](infra/modules/gcp-bot-runtime) — Cloud Run service, Artifact Registry repo, Cloud Build trigger, IAM, Discord-secret container
-
-Still ahead: the **us-east4 → us-central1 cutover** (the TF-managed bot service is greenfield in us-central1; the old us-east4 service is deleted by hand) and a **Cloud-Function idle watcher** that polls the Valheim A2S port and stops the VM after N minutes of zero players.
+- [`gcp-idle-watcher`](infra/modules/gcp-idle-watcher) — Cloud Function + Scheduler that polls the Valheim A2S port and stops the VM after N consecutive empty checks (default: ~60-90 min idle window)
 
 See [TODO.md](./TODO.md) for the cutover checklist and the manual prerequisites (Discord developer portal, Cloud Build ↔ GitHub OAuth).
 
@@ -111,7 +110,7 @@ CI runs `fmt → validate → plan` on every PR touching `infra/**` and runs `ap
 | Snapshots + GCS backups | <$1 |
 | **Total** | **~$22–33** |
 
-The two big costs are the bot's always-on CPU and the VM running 24/7. The VM is what an eventual idle watcher would bring down. The bot uses `cpu_idle = false` because Discord delivers slash commands over a WebSocket gateway (not over Cloud Run's HTTP port) — a CPU-throttled service starves the worker thread doing TLS handshakes from `/valheim *` calls. See [`infra/modules/gcp-bot-runtime/service.tf`](infra/modules/gcp-bot-runtime/service.tf) for the full reasoning.
+The two big costs are the bot's always-on CPU and the VM running 24/7. The idle watcher cuts the VM bill by ~70-80% in practice — it stops the VM after 60-90 minutes of zero players, so the cost table assumes ~3 hours of daily usage rather than 24/7. The bot uses `cpu_idle = false` because Discord delivers slash commands over a WebSocket gateway (not over Cloud Run's HTTP port) — a CPU-throttled service starves the worker thread doing TLS handshakes from `/valheim *` calls. See [`infra/modules/gcp-bot-runtime/service.tf`](infra/modules/gcp-bot-runtime/service.tf) for the full reasoning.
 
 ---
 
@@ -187,7 +186,8 @@ mr-swede/
 │   └── modules/
 │       ├── gcp-bootstrap/               # APIs, TF state bucket, WIF
 │       ├── gcp-valheim-vm/              # VM, persistent disk, firewall, cloud-init
-│       └── gcp-bot-runtime/             # Cloud Run service, AR repo, Cloud Build trigger, IAM
+│       ├── gcp-bot-runtime/             # Cloud Run service, AR repo, Cloud Build trigger, IAM
+│       └── gcp-idle-watcher/            # Cloud Function + Scheduler that auto-stops idle VMs
 │
 ├── server/                              # Files that run *inside* the Valheim VM
 │   ├── docker-compose.yml               # lloesche/valheim-server-docker
