@@ -6,6 +6,13 @@ After=docker.service network-online.target valheim-fetch-secrets.service
 [Service]
 Type=simple
 WorkingDirectory=/opt/valheim
+# `compose down` first so we always recreate the container with the
+# current compose file. Without this, docker auto-restarts the old
+# container (because compose has restart: unless-stopped) and any
+# server/docker-compose.yml edit pushed via TF startup-script doesn't
+# take effect until a manual recreate. The leading `-` makes the down
+# non-fatal -- it'll fail on first boot when no container exists yet.
+ExecStartPre=-/usr/bin/docker compose down --timeout 120
 ExecStart=/usr/bin/docker compose up
 ExecStop=/usr/bin/docker compose down --timeout 120
 Restart=on-failure

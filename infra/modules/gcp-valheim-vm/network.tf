@@ -75,3 +75,26 @@ resource "google_compute_firewall" "valheim_udp" {
     ports    = ["2456-2458"]
   }
 }
+
+# STATUS_HTTP: lloesche image exposes /status.json on a TCP port with
+# the PlayFab join code and live player count. The bot's /valheim
+# status reads it; we'd also rather not put a load balancer in front
+# of one VM, so the port is open to the public internet directly.
+# Nothing in /status.json is secret (everything in it is also visible
+# via Steam A2S on UDP 2457, which is already public).
+resource "google_compute_firewall" "valheim_status_http" {
+  project     = var.project_id
+  name        = "valheim-allow-status-http"
+  network     = google_compute_network.valheim.name
+  description = "Valheim STATUS_HTTP (TCP 9001). Returns JSON with join code + player count; nothing secret."
+  direction   = "INGRESS"
+  priority    = 1000
+
+  source_ranges = ["0.0.0.0/0"]
+  target_tags   = ["valheim-server"]
+
+  allow {
+    protocol = "tcp"
+    ports    = [tostring(var.status_http_port)]
+  }
+}

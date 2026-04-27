@@ -69,6 +69,12 @@ variable "iap_ssh_source_range" {
   default     = "35.235.240.0/20"
 }
 
+variable "status_http_port" {
+  description = "TCP port for lloesche's STATUS_HTTP server (returns /status.json with join code + player count). If you change it here, also edit server/docker-compose.yml's port mapping + STATUS_HTTP_PORT env."
+  type        = number
+  default     = 9001
+}
+
 variable "deletion_protection" {
   description = "Whether to enable deletion_protection on the VM and data disk. Off is sometimes useful in test envs; default ON for prod."
   type        = bool
