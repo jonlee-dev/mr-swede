@@ -32,3 +32,8 @@ output "cloudbuild_trigger_id" {
   description = "ID of the Cloud Build trigger watching master. Useful for `gcloud builds triggers run`."
   value       = google_cloudbuild_trigger.bot_master.trigger_id
 }
+
+output "vm_controller_role_id" {
+  description = "Resource name of the custom role granting minimum perms (instances.{get,start,stop} + zoneOperations.get) for the Valheim VM. Reused by the idle watcher."
+  value       = google_project_iam_custom_role.vm_controller.name
+}

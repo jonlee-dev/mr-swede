@@ -117,3 +117,8 @@ output "bot_cloudbuild_trigger_id" {
   value       = module.bot_runtime.cloudbuild_trigger_id
   description = "ID of the master-branch trigger. Use with `gcloud builds triggers run` for manual rebuilds."
 }
+
+output "vm_controller_role_id" {
+  value       = module.bot_runtime.vm_controller_role_id
+  description = "Custom role granting minimum compute perms on the Valheim VM. Consumed by the idle-watcher module."
+}
