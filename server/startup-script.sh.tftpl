@@ -115,11 +115,19 @@ mount -a
 # lloesche/valheim-server runs as UID 1000 inside the container.
 chown -R 1000:1000 /opt/valheim/data
 
-# 4. Reload + enable + start systemd units. All idempotent: re-running
-#    enable/start on an already-running unit is a no-op.
+# 4. Reload + enable + RESTART systemd units.
+#
+# Restart (not just `enable --now`) is intentional: systemd may have
+# already started these units in parallel with google-startup-scripts
+# on boot, before we wrote the new unit-file contents to disk. In
+# that case `enable --now` is a no-op and the OLD unit definition
+# stays running. Restart forces systemd to re-read the freshly-
+# written unit files and apply any changes (compose recreate via
+# valheim.service ExecStartPre, etc.).
 systemctl daemon-reload
-systemctl enable valheim-fetch-secrets.service
-systemctl enable --now valheim.service
-systemctl enable --now valheim-status.service
+systemctl enable valheim-fetch-secrets.service valheim.service valheim-status.service
+systemctl restart valheim-fetch-secrets.service
+systemctl restart valheim.service
+systemctl restart valheim-status.service
 
 echo "=== Valheim startup-script complete: $(date -u +%FT%TZ) ==="
