@@ -14,6 +14,17 @@ variable "valheim_instance_self_link" {
   type        = string
 }
 
+variable "valheim_password_secret_id" {
+  description = "Secret Manager secret_id for the Valheim server password (from module.valheim_vm.server_password_secret_id). The bot reads it to include in /valheim status."
+  type        = string
+}
+
+variable "valheim_status_http_port" {
+  description = "TCP port on the Valheim VM where the log-scraping status server listens. Bot fetches /status.json from this for /valheim status."
+  type        = number
+  default     = 9001
+}
+
 variable "github_owner" {
   description = "GitHub account or org that owns the bot's source repo (used by the Cloud Build trigger)."
   type        = string

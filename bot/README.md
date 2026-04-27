@@ -23,7 +23,7 @@ bot/
 │   │   └── valheim.py     # /valheim status|start|stop
 │   ├── services/
 │   │   ├── compute.py     # GCE start/stop/describe via google-cloud-compute
-│   │   └── server_query.py # Steam A2S query via python-a2s
+│   │   └── server_query.py # HTTP fetch of /status.json from the VM's log-scraping daemon
 │   └── utils/helpers.py
 ├── tests/
 │   ├── unit/              # Fast, hermetic tests
@@ -114,11 +114,11 @@ Dot-notation flat keys (`"mr-swede.token": "..."`) are also accepted for backwar
 |---|---|
 | `/ping` | Latency check |
 | `/info` | Bot version + command list |
-| `/valheim status` | Reports VM state + Steam-A2S player count |
+| `/valheim status` | Reports VM state, PlayFab join code, server password, and player count |
 | `/valheim start` | Starts the GCE VM (idempotent — safe if already running) |
 | `/valheim stop` | Stops the GCE VM (idempotent) |
 
-The `/valheim` commands call into `src.services.compute` (start/stop/describe via `google-cloud-compute`) and `src.services.server_query` (Steam A2S via `python-a2s`).
+The `/valheim` commands call into `src.services.compute` (start/stop/describe via `google-cloud-compute`) and `src.services.server_query` (HTTP fetch of `/status.json` from the VM's log-scraping daemon at `server/scripts/status-server.py`).
 
 ---
 

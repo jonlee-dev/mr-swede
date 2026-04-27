@@ -1,12 +1,13 @@
 """Valheim server control commands.
 
 Slash commands:
-    /valheim status -- describe current VM + game state
+    /valheim status -- describe current VM + game state, including the
+                       PlayFab join code and server password
     /valheim start  -- start the VM (idempotent)
     /valheim stop   -- stop the VM (idempotent)
 
-Each handler defers, calls into src.services.compute / server_query, then
-sends a public response so the whole channel sees the result.
+Each handler defers, calls into src.services.compute / server_query,
+then sends a response so the channel sees the result.
 """
 
 import discord
@@ -14,10 +15,11 @@ from discord import app_commands
 from discord.ext import commands
 
 from src.config.logging import get_logger
+from src.config.secrets import get_secrets
 from src.config.settings import get_settings
 from src.services import compute, server_query
 from src.services.compute import InstanceState
-from src.services.server_query import GameState
+from src.services.server_query import LiveStatus
 
 logger = get_logger(__name__)
 
@@ -31,11 +33,15 @@ _STATUS_COLORS: dict[str, int] = {
 }
 
 
-def build_status_embed(state: InstanceState, game: GameState | None) -> discord.Embed:
-    """Render an InstanceState (+ optional GameState) into a Discord embed.
+def build_status_embed(
+    state: InstanceState,
+    live: LiveStatus | None,
+    password: str | None,
+) -> discord.Embed:
+    """Render an InstanceState + optional LiveStatus + password into a Discord embed.
 
-    Pure function — no I/O — so the rendering branches are unit-testable
-    without mocking interactions.
+    Pure function -- no I/O -- so the rendering branches are unit-
+    testable without mocking interactions.
     """
     color = _STATUS_COLORS.get(state.status, 0x3498DB)
     embed = discord.Embed(
@@ -46,21 +52,21 @@ def build_status_embed(state: InstanceState, game: GameState | None) -> discord.
     embed.add_field(name="Zone", value=state.zone, inline=True)
     if state.public_ip:
         embed.add_field(name="Address", value=f"`{state.public_ip}:2456`", inline=True)
-    if game is not None:
-        embed.add_field(
-            name="Players",
-            value=f"{game.player_count}/{game.max_players}",
-            inline=True,
-        )
-        embed.add_field(name="World", value=game.map_name, inline=True)
-        embed.set_footer(text=game.server_name)
+
+    if live is not None and live.server_running:
+        if live.join_code:
+            embed.add_field(name="Join code", value=f"`{live.join_code}`", inline=True)
+        embed.add_field(name="Players", value=str(live.player_count), inline=True)
+        if password:
+            embed.add_field(name="Password", value=f"`{password}`", inline=True)
     elif state.status == "RUNNING":
         embed.add_field(
             name="Game server",
-            value="VM is up but the game server isn't answering yet (it boots ~30s "
-            "after the VM). Try `/valheim status` again shortly.",
+            value="VM is up but the game server isn't answering yet (Valheim takes "
+            "~60-90s to boot after the VM does). Try `/valheim status` again shortly.",
             inline=False,
         )
+
     return embed
 
 
@@ -82,10 +88,22 @@ class ValheimCog(commands.GroupCog, name="valheim"):
         logger.info("Valheim status requested", user=str(interaction.user))
         project, zone, instance = self._target()
         state = await compute.describe_instance(project, zone, instance)
-        game: GameState | None = None
+
+        live: LiveStatus | None = None
         if state.status == "RUNNING" and state.public_ip:
-            game = await server_query.query(state.public_ip)
-        await interaction.followup.send(embed=build_status_embed(state, game))
+            live = await server_query.fetch_status(
+                state.public_ip,
+                port=self._settings.valheim_status_http_port,
+            )
+
+        # Password is in GSM; fetch every status call so a rotation is
+        # picked up without restarting the bot. Cheap (cached on the
+        # SecretManager after first call).
+        password: str | None = None
+        if state.status == "RUNNING":
+            password = get_secrets(self._settings.discord_bot_name).valheim_password
+
+        await interaction.followup.send(embed=build_status_embed(state, live, password))
 
     @app_commands.command(name="start", description="Start the Valheim server")
     async def start(self, interaction: discord.Interaction) -> None:

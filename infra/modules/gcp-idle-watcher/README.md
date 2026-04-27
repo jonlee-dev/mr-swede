@@ -1,9 +1,14 @@
 # Module: gcp-idle-watcher
 
-Cloud Scheduler + Cloud Function that polls the Valheim VM's Steam A2S
-query port and stops the VM after N consecutive empty checks. Cuts the
-VM's monthly bill from ~$50 (24/7) to ~$5-10 (used 1-3 hours/day) by
-catching the case where someone forgot to run `/valheim stop`.
+Cloud Scheduler + Cloud Function that polls the Valheim VM's status
+HTTP endpoint and stops the VM after N consecutive empty checks. Cuts
+the VM's monthly bill from ~$50 (24/7) to ~$5-10 (used 1-3 hours/day)
+by catching the case where someone forgot to run `/valheim stop`.
+
+Why HTTP and not Steam A2S? Valheim's crossplay/PlayFab transport made
+legacy Steam A2S queries unreliable. The VM runs a small log-scraping
+daemon (`server/scripts/status-server.py`) that exposes parsed live
+state at `:9001/status.json`; we consume that.
 
 ## What this module creates
 
@@ -36,12 +41,12 @@ See [`outputs.tf`](outputs.tf). Most useful: `function_name`,
 Each tick (default every 30 minutes):
 
 1. Read VM state. If `status != RUNNING`, reset counter and no-op.
-2. A2S probe to `<vm_public_ip>:<valheim_a2s_port>` (default 2457).
-   - On any failure (timeout, unreachable, malformed response), no-op
-     conservatively WITHOUT incrementing.
-3. If A2S reports >0 players, reset counter to 0.
-4. If A2S reports 0 players, increment counter. If the counter hits
-   `var.empty_checks_to_stop`, issue `instances.stop` and reset.
+2. HTTP fetch of `http://<vm_public_ip>:<valheim_status_http_port>/status.json` (default port 9001).
+   - On any failure (timeout, unreachable, malformed JSON, daemon-
+     reported scrape error), no-op conservatively WITHOUT incrementing.
+3. If the daemon reports >0 players, reset counter to 0.
+4. If the daemon reports 0 players, increment counter. If the counter
+   hits `var.empty_checks_to_stop`, issue `instances.stop` and reset.
 
 State (a single `consecutive_empty` integer) lives in the state bucket
 as `state.json`. If the object goes missing, the function starts fresh

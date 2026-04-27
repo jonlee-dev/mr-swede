@@ -2,8 +2,11 @@
 # Cloud Functions installs these during the build step; runtime is python312.
 # Pin upper bounds to avoid breaking changes; lower bounds are the
 # versions tested locally.
+#
+# python-a2s was here previously; dropped because the watcher now
+# fetches /status.json from the VM's log-scraping daemon over HTTP
+# (urllib, stdlib, no extra dep needed).
 
 functions-framework>=3.0,<4
 google-cloud-compute>=1.19,<2
 google-cloud-storage>=2.16,<3
-python-a2s>=1.4,<2

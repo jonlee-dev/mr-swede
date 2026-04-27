@@ -28,6 +28,7 @@ def mock_secrets() -> AppSecrets:
             token="test-discord-token",
             public_key="test-public-key",
         ),
+        valheim_password="test-server-password",
     )
 
 

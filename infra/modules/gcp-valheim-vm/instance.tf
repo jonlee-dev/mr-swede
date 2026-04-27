@@ -22,6 +22,8 @@ locals {
     fetch_secrets_sh              = file("${local.server_dir}/scripts/fetch-secrets.sh")
     valheim_service               = file("${local.server_dir}/scripts/valheim.service")
     valheim_fetch_secrets_service = file("${local.server_dir}/scripts/valheim-fetch-secrets.service")
+    status_server_py              = file("${local.server_dir}/scripts/status-server.py")
+    valheim_status_service        = file("${local.server_dir}/scripts/valheim-status.service")
     server_name                   = var.server_name
     world_name                    = var.world_name
     # Stable Linux device path. GCE exposes attached disks under

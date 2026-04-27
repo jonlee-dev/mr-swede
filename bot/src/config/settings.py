@@ -38,9 +38,15 @@ class Settings(BaseSettings):
         "If empty, syncs globally (~1hr propagation).",
     )
 
-    # Valheim VM target -- consumed by src.services.compute (Phase 3)
+    # Valheim VM target -- consumed by src.services.compute and the
+    # status-fetch HTTP call.
     valheim_zone: str = Field(default="us-central1-a", alias="VALHEIM_ZONE")
     valheim_instance_name: str = Field(default="valheim-server", alias="VALHEIM_INSTANCE_NAME")
+    valheim_status_http_port: int = Field(
+        default=9001,
+        alias="VALHEIM_STATUS_HTTP_PORT",
+        description="TCP port on the Valheim VM where the log-scraping status server listens. Must match server/scripts/status-server.py + the firewall rule in gcp-valheim-vm.",
+    )
 
     # HTTP server (Cloud Run health checks)
     host: str = Field(default="0.0.0.0", alias="HOST")

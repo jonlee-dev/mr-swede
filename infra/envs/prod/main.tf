@@ -35,6 +35,7 @@ module "bot_runtime" {
   project_id                 = var.project_id
   region                     = var.region
   valheim_instance_self_link = module.valheim_vm.instance_self_link
+  valheim_password_secret_id = module.valheim_vm.server_password_secret_id
   github_owner               = var.github_owner
   github_repo                = var.github_repo
   discord_guild_id           = var.discord_guild_id

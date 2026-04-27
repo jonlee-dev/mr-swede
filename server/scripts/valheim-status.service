@@ -1,0 +1,18 @@
+[Unit]
+Description=Valheim status HTTP server (log scraper)
+After=docker.service valheim.service
+Wants=valheim.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/valheim/scripts/status-server.py
+Restart=on-failure
+RestartSec=10
+# Needs docker socket access to run `docker compose logs`. Running as
+# root is the simplest grant. The script does no file writes -- it
+# only reads logs and binds a listening socket on :9001.
+User=root
+Group=root
+
+[Install]
+WantedBy=multi-user.target

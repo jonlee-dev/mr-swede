@@ -1,17 +1,21 @@
-"""Google Secret Manager integration for the Discord bot token.
+"""Google Secret Manager integration.
 
-The discord-bot-secrets GSM secret is a JSON object of the form:
+Two distinct secrets:
 
-    {
-      "mr-swede": {"id": "...", "token": "...", "public_key": "..."},
-      ...
-    }
+  discord-bot-secrets   -- JSON blob, multi-bot. Format:
+      {
+        "mr-swede": {"id": "...", "token": "...", "public_key": "..."},
+        ...
+      }
+    Held over from when this repo hosted multiple Discord bots. We
+    still support nested objects AND dot-notation keys
+    (`"mr-swede.token": "..."`) for compatibility with how the
+    existing GSM secret is structured.
 
-A single secret holding multiple bots is a holdover from when this repo
-hosted multiple Discord bots. We still support nested objects AND
-dot-notation keys (`"mr-swede.token": "..."`) for compatibility with how
-the existing GSM secret is structured -- changing that secret in place
-would require coordinating with anyone else reading it.
+  valheim-server-password -- plain UTF-8 string. The server password
+    seeded out-of-band and consumed by both the Valheim container and
+    /valheim status (so users see the password in the channel without
+    having to ask).
 """
 
 import json
@@ -39,15 +43,18 @@ class AppSecrets:
     """All application secrets."""
 
     discord: DiscordBotSecrets | None
+    valheim_password: str | None
 
 
 class SecretManager:
-    """Pulls the discord-bot-secrets JSON from GSM, with env-var fallback."""
+    """Pulls secrets from GSM, with env-var fallback for local dev."""
 
-    # The exact resource path is project-specific; in production we look it up
-    # via DISCORD_SECRET_PATH so we don't hardcode the project number here.
+    # The exact resource paths are project-specific; in production we look
+    # them up via *_SECRET_PATH env vars so we don't hardcode project
+    # numbers here.
     DEFAULT_SECRET_PATHS: dict[str, str] = {
         "discord": "",  # Set via DISCORD_SECRET_PATH env var
+        "valheim_password": "",  # Set via VALHEIM_PASSWORD_SECRET_PATH env var
     }
 
     def __init__(
@@ -58,7 +65,10 @@ class SecretManager:
         self._project_id = project_id or os.environ.get("GCP_PROJECT_ID", "")
         self._discord_bot_name = discord_bot_name
         self._client: Any = None
-        self._cache: dict[str, Any] = {}
+        # JSON-parsed cache (used for the discord secret).
+        self._json_cache: dict[str, Any] = {}
+        # Plain-string cache (used for the valheim password).
+        self._string_cache: dict[str, str] = {}
 
     @property
     def client(self) -> Any:
@@ -82,20 +92,24 @@ class SecretManager:
         return self._client
 
     def _get_secret_path(self, secret_type: str) -> str:
+        """Resolve a secret path: env var override > project-id default > empty."""
         env_var = f"{secret_type.upper()}_SECRET_PATH"
         if os.environ.get(env_var):
             return os.environ[env_var]
-        # Build a default if project_id is known.
-        if self._project_id and secret_type == "discord":
-            return f"projects/{self._project_id}/secrets/discord-bot-secrets/versions/latest"
+        if self._project_id:
+            if secret_type == "discord":
+                return f"projects/{self._project_id}/secrets/discord-bot-secrets/versions/latest"
+            if secret_type == "valheim_password":
+                return f"projects/{self._project_id}/secrets/valheim-server-password/versions/latest"
         return self.DEFAULT_SECRET_PATHS.get(secret_type, "")
 
     def _fetch_secret_json(self, secret_path: str) -> dict[str, Any] | None:
+        """Fetch a JSON-parsed secret. Used for the multi-bot Discord secret."""
         if not secret_path:
             logger.warning("Empty secret path provided")
             return None
-        if secret_path in self._cache:
-            cached: dict[str, Any] | None = self._cache[secret_path]
+        if secret_path in self._json_cache:
+            cached: dict[str, Any] | None = self._json_cache[secret_path]
             return cached
         if not self.client:
             logger.error("Secret Manager client not available - cannot fetch secrets")
@@ -105,7 +119,7 @@ class SecretManager:
         try:
             response = self.client.access_secret_version(request={"name": secret_path})
             parsed: dict[str, Any] = json.loads(response.payload.data.decode("UTF-8"))
-            self._cache[secret_path] = parsed
+            self._json_cache[secret_path] = parsed
             logger.info("Loaded secret", path=secret_path, keys=list(parsed.keys()))
             return parsed
         except json.JSONDecodeError as e:
@@ -114,6 +128,31 @@ class SecretManager:
         except Exception as e:
             logger.error(
                 "Failed to fetch secret",
+                path=secret_path,
+                error=str(e),
+                error_type=type(e).__name__,
+            )
+            return None
+
+    def _fetch_secret_string(self, secret_path: str) -> str | None:
+        """Fetch a plain UTF-8 string secret. Used for the valheim password."""
+        if not secret_path:
+            return None
+        if secret_path in self._string_cache:
+            return self._string_cache[secret_path]
+        if not self.client:
+            logger.error("Secret Manager client not available - cannot fetch secrets")
+            return None
+
+        logger.info("Fetching string secret from GSM", path=secret_path)
+        try:
+            response = self.client.access_secret_version(request={"name": secret_path})
+            decoded = response.payload.data.decode("UTF-8").strip()
+            self._string_cache[secret_path] = decoded
+            return decoded
+        except Exception as e:
+            logger.error(
+                "Failed to fetch string secret",
                 path=secret_path,
                 error=str(e),
                 error_type=type(e).__name__,
@@ -163,11 +202,28 @@ class SecretManager:
             logger.error("Missing key in discord secrets", key=str(e), bot_name=bot_name)
             return None
 
+    def get_valheim_password(self) -> str | None:
+        """Return the Valheim server password (plain string).
+
+        Checked in order: VALHEIM_PASSWORD env var → GSM secret. The
+        env var is for local dev; in Cloud Run we always go through
+        GSM via VALHEIM_PASSWORD_SECRET_PATH.
+        """
+        if os.environ.get("VALHEIM_PASSWORD"):
+            logger.info("Using VALHEIM_PASSWORD from environment")
+            return os.environ["VALHEIM_PASSWORD"]
+        secret_path = self._get_secret_path("valheim_password")
+        return self._fetch_secret_string(secret_path)
+
     def get_all_secrets(self) -> AppSecrets:
-        return AppSecrets(discord=self.get_discord_secrets())
+        return AppSecrets(
+            discord=self.get_discord_secrets(),
+            valheim_password=self.get_valheim_password(),
+        )
 
     def clear_cache(self) -> None:
-        self._cache.clear()
+        self._json_cache.clear()
+        self._string_cache.clear()
 
 
 _secret_manager: SecretManager | None = None

@@ -47,3 +47,14 @@ resource "google_secret_manager_secret_iam_member" "bot_can_read_discord_secrets
   role      = "roles/secretmanager.secretAccessor"
   member    = "serviceAccount:${google_service_account.bot.email}"
 }
+
+# Secret-scoped accessor for the Valheim server password. The secret
+# is owned by the gcp-valheim-vm module (it's the same secret the VM
+# reads at boot); we just add the bot SA as an additional reader so
+# /valheim status can include the password in its response.
+resource "google_secret_manager_secret_iam_member" "bot_can_read_valheim_password" {
+  project   = var.project_id
+  secret_id = var.valheim_password_secret_id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.bot.email}"
+}

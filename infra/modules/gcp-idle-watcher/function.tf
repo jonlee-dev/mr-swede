@@ -60,7 +60,7 @@ resource "google_cloudfunctions2_function" "watcher" {
   project     = var.project_id
   name        = "valheim-idle-watcher"
   location    = var.region
-  description = "Polls Valheim's A2S query port; stops the VM after ${var.empty_checks_to_stop} consecutive empty checks."
+  description = "Polls the Valheim VM's status HTTP endpoint; stops the VM after ${var.empty_checks_to_stop} consecutive empty checks."
 
   build_config {
     runtime     = "python312"
@@ -82,13 +82,13 @@ resource "google_cloudfunctions2_function" "watcher" {
     ingress_settings      = "ALLOW_INTERNAL_AND_GCLB"
 
     environment_variables = {
-      GCP_PROJECT                       = var.project_id
-      VALHEIM_ZONE                      = local.vm_zone
-      VALHEIM_INSTANCE_NAME             = local.vm_name
-      VALHEIM_A2S_PORT                  = var.valheim_a2s_port
-      VALHEIM_A2S_TIMEOUT_SECONDS       = var.a2s_timeout_seconds
-      IDLE_WATCHER_STATE_BUCKET         = google_storage_bucket.state.name
-      IDLE_WATCHER_EMPTY_CHECKS_TO_STOP = var.empty_checks_to_stop
+      GCP_PROJECT                         = var.project_id
+      VALHEIM_ZONE                        = local.vm_zone
+      VALHEIM_INSTANCE_NAME               = local.vm_name
+      VALHEIM_STATUS_HTTP_PORT            = var.valheim_status_http_port
+      VALHEIM_STATUS_HTTP_TIMEOUT_SECONDS = var.status_http_timeout_seconds
+      IDLE_WATCHER_STATE_BUCKET           = google_storage_bucket.state.name
+      IDLE_WATCHER_EMPTY_CHECKS_TO_STOP   = var.empty_checks_to_stop
     }
   }
 

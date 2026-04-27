@@ -5,7 +5,7 @@
 - **Bot (`bot/` + `infra/modules/gcp-bot-runtime`)** — Python + discord.py (Gateway), deployed to Cloud Run with `min-instances=1`. Slash-only. Handles `/ping`, `/info`, and the `/valheim status|start|stop` group. Runtime infra (Cloud Run service, Artifact Registry, Cloud Build trigger, IAM) is fully Terraform-managed; image lifecycle is owned by Cloud Build (TF `ignore_changes` on the image field).
 - **Valheim VM (`server/` + `infra/modules/gcp-valheim-vm`)** — single GCE `e2-standard-2` in `us-central1-a` running Docker Compose + `lloesche/valheim-server`, world data on a separately-attached `pd-balanced` persistent disk. Crossplay ON; players join via PlayFab code.
 - **Backups** — daily GCE disk snapshots + `gsutil rsync` of world files to a GCS bucket. *(Not yet built; will land as `infra/modules/gcp-backups`.)*
-- **Idle watcher** — Cloud Scheduler → Cloud Function polling the VM's Steam A2S query port. Stops the VM after 30 min of zero players. *(Not yet built; will land as `infra/modules/gcp-idle-watcher`.)*
+- **Idle watcher (`infra/modules/gcp-idle-watcher`)** — Cloud Scheduler → Cloud Function polling the VM's status HTTP endpoint (`/status.json` from a log-scraping daemon, see below). Stops the VM after N consecutive empty checks.
 
 ## Valheim VM topology
 
@@ -64,7 +64,7 @@ The startup-script is rendered by `templatefile()` with the four runtime artifac
 The bot exposes two service modules with intentionally narrow public surfaces:
 
 - [`bot/src/services/compute.py`](../bot/src/services/compute.py) — three free functions (`describe_instance`, `start_instance`, `stop_instance`) returning a frozen `InstanceState` dataclass. GCE-specific via `google-cloud-compute`.
-- [`bot/src/services/server_query.py`](../bot/src/services/server_query.py) — one function `query(host, port)` returning a frozen `GameState` dataclass. Steam A2S via `python-a2s`.
+- [`bot/src/services/server_query.py`](../bot/src/services/server_query.py) — one function `fetch_status(host, port)` returning a frozen `LiveStatus` dataclass. HTTP fetch from the VM's log-scraping daemon (`server/scripts/status-server.py`). Replaced an earlier Steam-A2S implementation that broke when Valheim's crossplay/PlayFab transport rolled out.
 
 **Swapping clouds.** We deliberately picked a single concrete impl over an abstract `Protocol`/ABC up front. To swap to AWS/Hetzner/etc. later: rename `compute.py` → `gcp_compute.py`, lift the function signatures into a `Protocol` in a new `compute.py`, add an `aws_ec2.py` parallel impl, and update one import line per call site (currently just [`bot/src/cogs/valheim.py`](../bot/src/cogs/valheim.py)). The `InstanceState`/`GameState` dataclasses stay unchanged — providers map their native types into them.
 

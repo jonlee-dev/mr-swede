@@ -81,6 +81,16 @@ ${base64encode(valheim_fetch_secrets_service)}
 __VALHEIM_BLOB_EOF__
 chmod 0644 /etc/systemd/system/valheim-fetch-secrets.service
 
+base64 -d > /opt/valheim/scripts/status-server.py <<'__VALHEIM_BLOB_EOF__'
+${base64encode(status_server_py)}
+__VALHEIM_BLOB_EOF__
+chmod 0750 /opt/valheim/scripts/status-server.py
+
+base64 -d > /etc/systemd/system/valheim-status.service <<'__VALHEIM_BLOB_EOF__'
+${base64encode(valheim_status_service)}
+__VALHEIM_BLOB_EOF__
+chmod 0644 /etc/systemd/system/valheim-status.service
+
 # world.env: plain text since templatefile already substituted the values.
 # Single-quoted heredoc so bash doesn't try to re-expand anything (the
 # var values landed literal after templatefile()).
@@ -110,5 +120,6 @@ chown -R 1000:1000 /opt/valheim/data
 systemctl daemon-reload
 systemctl enable valheim-fetch-secrets.service
 systemctl enable --now valheim.service
+systemctl enable --now valheim-status.service
 
 echo "=== Valheim startup-script complete: $(date -u +%FT%TZ) ==="

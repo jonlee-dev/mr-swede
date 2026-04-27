@@ -5,6 +5,97 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.2.0] - 2026-04-27
+
+### Replace Steam A2S with a log-scraping daemon
+
+`/valheim status` now shows the PlayFab join code, server password,
+and live player count -- not just the GCE state. Getting there
+required scrapping the Steam A2S query mechanism we'd been relying on:
+Valheim's crossplay/PlayFab transport made standard A2S queries
+unreliable, and lloesche's STATUS_HTTP feature (an A2S wrapper) was
+silently returning timeout-error JSON on every call.
+
+### Added
+
+- **`server/scripts/status-server.py`** -- a small Python HTTP server
+  that runs as a host-level systemd unit, scrapes `docker compose
+  logs` every 30s for the join code + player events, and exposes the
+  parsed result as JSON at `:9001/status.json`. Stdlib only -- no
+  third-party deps.
+- **`server/scripts/valheim-status.service`** -- the systemd unit.
+- **`/valheim status` enrichment**: shows join code, password, and
+  player count when the server is running.
+- **Bot SA secret-scoped read access** to `valheim-server-password`
+  (new IAM binding in `gcp-bot-runtime/secret.tf`).
+- New env vars on the Cloud Run service: `VALHEIM_STATUS_HTTP_PORT`,
+  `VALHEIM_PASSWORD_SECRET_PATH`.
+- Test coverage for the new password-fetching code path.
+
+### Changed
+
+- **`server/docker-compose.yml`**: dropped `STATUS_HTTP`,
+  `STATUS_HTTP_PORT`, and the `9001:9001/tcp` port mapping.
+  Lloesche's daemon stays disabled; our log scraper takes the port.
+- **`server/scripts/valheim.service`**: added
+  `ExecStartPre=docker compose down --timeout 120` so reboots always
+  recreate the container with the current compose file. Without this,
+  docker auto-restarts the old container (because compose has
+  `restart: unless-stopped`) and any compose-yml edit pushed via TF
+  doesn't take effect until a manual recreate.
+- **`bot/src/services/server_query.py`**: rewrote from python-a2s to
+  httpx fetch of `/status.json`. New `LiveStatus` dataclass replaces
+  the old `GameState`.
+- **`bot/src/cogs/valheim.py`**: status handler reads live JSON
+  endpoint + password from GSM and renders all three (join code,
+  player count, password) into the embed.
+- **`infra/modules/gcp-idle-watcher/function/main.py`**: swapped
+  python-a2s for stdlib `urllib.request` against the same
+  `/status.json`. The watcher had been silently failing for the same
+  A2S reason -- "conservative" no-count meant the VM never auto-
+  stopped on player count alone, just on `vm.status != RUNNING` (which
+  only triggers when someone manually stops it). The fix gets the
+  empty-check counter actually counting empties.
+- **`bot/pyproject.toml`**: dropped `python-a2s`, pinned `httpx` (was
+  already a transitive FastAPI dep).
+- **`infra/modules/gcp-idle-watcher/variables.tf`**: renamed
+  `valheim_a2s_port` -> `valheim_status_http_port` and
+  `a2s_timeout_seconds` -> `status_http_timeout_seconds`.
+- Doc rewrites across architecture.md, runbook.md, server/README.md,
+  bot/README.md, root README.md, and the gcp-idle-watcher module
+  README.
+- `__version__` -> `3.2.0`.
+
+### Why log scraping
+
+Valheim's crossplay/PlayFab discovery has been the primary transport
+for some time. The dedicated server still binds the legacy Steam A2S
+query port (`game_port + 1`, default 2457) but in practice doesn't
+respond to standard A2S queries reliably -- both `python-a2s` and
+lloesche's STATUS_HTTP feature consistently time out. The log file
+is the canonical source of truth (the join code is printed verbatim
+on every PlayFab session registration; player connect/disconnect
+events log "now N player(s)"). Scraping is what the Valheim community
+uses for the same reason.
+
+The daemon is intentionally tiny (~150 lines, stdlib only) so future
+maintenance is just regex updates if lloesche reformats the lines we
+match.
+
+### Migration
+
+Single `terraform apply` lands everything:
+- VM metadata updates (new startup-script content with the daemon)
+- Bot Cloud Run service updates (new env vars + IAM binding)
+- Idle-watcher Cloud Function rebuilds (new requirements.txt + main.py)
+
+`gcloud compute instances reset valheim-server` to pick up the new
+startup-script + the new systemd unit. The container rebuild this
+triggers means players are kicked once -- no avoiding it on the
+first bootstrap of the daemon.
+
+---
+
 ## [3.1.0] - 2026-04-26
 
 ### Wire `/valheim *` to GCE + Terraform-manage the bot runtime

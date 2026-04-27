@@ -26,12 +26,12 @@ Bot-related Poetry / pytest / Docker commands run from inside [`bot/`](bot/). Te
 
 ## Status
 
-The bot is fully functional. `/valheim status|start|stop` is wired to GCE and Steam A2S. The GCP infra is fully Terraform-managed across four modules:
+The bot is fully functional. `/valheim status|start|stop` is wired to GCE and a log-scraping HTTP daemon on the VM. The GCP infra is fully Terraform-managed across four modules:
 
 - [`gcp-bootstrap`](infra/modules/gcp-bootstrap) — APIs, state bucket, Workload Identity Federation
 - [`gcp-valheim-vm`](infra/modules/gcp-valheim-vm) — VPC, firewall, persistent disk, VM, server-password GSM secret
 - [`gcp-bot-runtime`](infra/modules/gcp-bot-runtime) — Cloud Run service, Artifact Registry repo, Cloud Build trigger, IAM, Discord-secret container
-- [`gcp-idle-watcher`](infra/modules/gcp-idle-watcher) — Cloud Function + Scheduler that polls the Valheim A2S port and stops the VM after N consecutive empty checks (default: ~60-90 min idle window)
+- [`gcp-idle-watcher`](infra/modules/gcp-idle-watcher) — Cloud Function + Scheduler that polls the VM's `/status.json` endpoint and stops the VM after N consecutive empty checks (default: ~60-90 min idle window)
 
 See [TODO.md](./TODO.md) for the cutover checklist and the manual prerequisites (Discord developer portal, Cloud Build ↔ GitHub OAuth).
 
@@ -43,7 +43,7 @@ See [TODO.md](./TODO.md) for the cutover checklist and the manual prerequisites 
 |---|---|
 | `/ping` | Latency check |
 | `/info` | Bot version + loaded cog list |
-| `/valheim status` | Show VM state and Steam-A2S player count |
+| `/valheim status` | Show VM state, PlayFab join code, server password, and player count |
 | `/valheim start` | Start the Valheim VM (idempotent) |
 | `/valheim stop` | Stop the Valheim VM (idempotent) |
 
@@ -175,7 +175,7 @@ mr-swede/
 │   │   │   └── valheim.py               # /valheim status|start|stop (scaffold)
 │   │   ├── services/
 │   │   │   ├── compute.py               # GCE instance start/stop/describe (Phase 3 stub)
-│   │   │   └── server_query.py          # Steam A2S query (Phase 3 stub)
+│   │   │   └── server_query.py          # HTTP fetch of /status.json from VM daemon
 │   │   └── utils/helpers.py
 │   ├── tests/unit/                      # pytest, no integration tests yet
 │   ├── Dockerfile                       # Multi-stage poetry → pip
@@ -220,7 +220,7 @@ See [docs/architecture.md](docs/architecture.md) for the network/data-flow diagr
 | HTTP | FastAPI + uvicorn (Cloud Run health checks) |
 | Secrets | Google Secret Manager |
 | Compute (Phase 3) | google-cloud-compute |
-| Server query (Phase 3) | python-a2s |
+| Server query | httpx (HTTP fetch from log-scraping daemon) |
 | Config | Pydantic Settings |
 | Logging | structlog (JSON) |
 | Testing | pytest, pytest-asyncio |

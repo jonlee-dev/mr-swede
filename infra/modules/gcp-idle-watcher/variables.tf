@@ -19,10 +19,10 @@ variable "vm_controller_role_id" {
   type        = string
 }
 
-variable "valheim_a2s_port" {
-  description = "Steam A2S query port. For Valheim this is game_port + 1 (defaults: game=2456, query=2457)."
+variable "valheim_status_http_port" {
+  description = "TCP port on the Valheim VM where the log-scraping status server listens. Must match server/scripts/status-server.py and the gcp-valheim-vm firewall rule."
   type        = number
-  default     = 2457
+  default     = 9001
 }
 
 variable "polling_schedule" {
@@ -37,8 +37,8 @@ variable "empty_checks_to_stop" {
   default     = 2
 }
 
-variable "a2s_timeout_seconds" {
-  description = "Per-probe A2S timeout. Probes that exceed this are treated as failures and DO NOT count as empty (conservative)."
+variable "status_http_timeout_seconds" {
+  description = "Per-probe HTTP timeout for /status.json. Fetches that exceed this are treated as failures and DO NOT count as empty (conservative)."
   type        = number
   default     = 5.0
 }

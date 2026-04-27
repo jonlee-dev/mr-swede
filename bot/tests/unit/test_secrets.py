@@ -106,9 +106,34 @@ class TestSecretManager:
         assert mock_client.access_secret_version.call_count == 1
 
     def test_clear_cache(self, manager: SecretManager):
-        manager._cache["x"] = "y"
+        manager._json_cache["x"] = "y"
+        manager._string_cache["z"] = "w"
         manager.clear_cache()
-        assert manager._cache == {}
+        assert manager._json_cache == {}
+        assert manager._string_cache == {}
+
+    def test_valheim_password_path_uses_project_id(self, manager: SecretManager):
+        path = manager._get_secret_path("valheim_password")
+        assert "test-project" in path
+        assert "valheim-server-password" in path
+
+    def test_valheim_password_path_env_override(self, manager: SecretManager):
+        with patch.dict("os.environ", {"VALHEIM_PASSWORD_SECRET_PATH": "custom/vp"}):
+            assert manager._get_secret_path("valheim_password") == "custom/vp"
+
+    def test_valheim_password_from_env(self, manager: SecretManager):
+        with patch.dict("os.environ", {"VALHEIM_PASSWORD": "env-pw"}):
+            assert manager.get_valheim_password() == "env-pw"
+
+    def test_valheim_password_from_gsm(self, manager: SecretManager):
+        mock_response = MagicMock()
+        mock_response.payload.data.decode.return_value = "gsm-pw\n"  # newline trimmed
+        mock_client = MagicMock()
+        mock_client.access_secret_version.return_value = mock_response
+        manager._client = mock_client
+
+        with patch.dict("os.environ", {}, clear=True):
+            assert manager.get_valheim_password() == "gsm-pw"
 
 
 class TestSecretDataClasses:
@@ -118,6 +143,6 @@ class TestSecretDataClasses:
             secrets.token = "new"
 
     def test_app_secrets_frozen(self):
-        app = AppSecrets(discord=None)
+        app = AppSecrets(discord=None, valheim_password=None)
         with pytest.raises(AttributeError):
             app.discord = DiscordBotSecrets(id="i", token="t", public_key="k")

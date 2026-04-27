@@ -11,9 +11,14 @@
 # /opt/valheim/data is the persistent disk mount. The lloesche image owns
 # the world layout under /config; backups land under /config/backups.
 #
-# STATUS_HTTP exposes a JSON endpoint at TCP 9001 with the PlayFab join
-# code and live player count. The bot's /valheim status reads it; the
-# firewall allows it from anywhere (no secrets in the response).
+# Note on status: lloesche has a STATUS_HTTP feature that exposes a
+# /status.json with join code + player count, BUT it's an A2S wrapper
+# under the hood and Valheim's crossplay/PlayFab transport doesn't
+# respond to legacy Steam A2S queries reliably. We instead run a
+# host-level log-scraping daemon (server/scripts/status-server.py)
+# that listens on host:9001/status.json. The lloesche STATUS_HTTP
+# feature stays disabled (its default) so it doesn't compete for the
+# port and doesn't burn CPU on doomed A2S probes.
 
 services:
   valheim:
@@ -25,7 +30,6 @@ services:
       - SYS_NICE
     ports:
       - "2456-2458:2456-2458/udp"
-      - "9001:9001/tcp"
     env_file:
       - /etc/valheim/world.env
       - /etc/valheim/secret.env
@@ -37,11 +41,5 @@ services:
       BACKUPS_DIRECTORY: /config/backups
       UPDATE_CRON: "0 5 * * *"
       RESTART_IF_IDLE_FOR: "" # idle policy lives in the bot, not the container
-
-      # Status HTTP server (lloesche feature). Exposes /status.json
-      # with join_code + player_count. No auth -- nothing leaks beyond
-      # what's already public via Steam A2S on UDP 2457.
-      STATUS_HTTP: "true"
-      STATUS_HTTP_PORT: "9001"
     volumes:
       - /opt/valheim/data:/config
