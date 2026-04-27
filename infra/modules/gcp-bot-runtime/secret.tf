@@ -14,10 +14,11 @@
 #     module.bot_runtime.google_secret_manager_secret.discord_bot_secrets \
 #     projects/mr-swede/secrets/discord-bot-secrets
 #
-# After the import, `terraform plan` may show drift if the existing secret
-# uses automatic replication and we declare user_managed below, or vice
-# versa. Adjust the replication block to match the imported state, or
-# (if you don't care about region pinning) flip below to `automatic {}`.
+# Replication block matches the live secret's automatic replication
+# (verified via `gcloud secrets describe discord-bot-secrets`). The
+# valheim-server-password secret uses user_managed instead because it's
+# Terraform-greenfield -- there we get to pick. For this one we adopt
+# what already exists.
 #
 # Payload format:
 #   {
@@ -32,11 +33,7 @@ resource "google_secret_manager_secret" "discord_bot_secrets" {
   secret_id = "discord-bot-secrets"
 
   replication {
-    user_managed {
-      replicas {
-        location = var.region
-      }
-    }
+    auto {}
   }
 
   labels = var.labels

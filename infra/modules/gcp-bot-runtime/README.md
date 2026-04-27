@@ -47,10 +47,13 @@ Two things must exist before `terraform apply` succeeds:
    Without this, `google_cloudbuild_trigger.bot_master` fails on
    create.
 
-2. **`discord-bot-secrets` exists in GSM** with a valid token already
-   seeded. The bot was deployed via click-ops before TF; the secret
-   pre-dates this module. **Do not let TF create a duplicate** -- import
-   on first apply (see below).
+2. **The bot SA `mr-swede-sa` exists** (created by hand back when the
+   bot was click-ops-deployed in us-east4). Import on first apply --
+   see below.
+
+3. **`discord-bot-secrets` exists in GSM** with a valid token already
+   seeded. The secret pre-dates this module. **Do not let TF create a
+   duplicate** -- import on first apply.
 
 ## First-apply procedure
 
@@ -59,23 +62,31 @@ PROJECT_ID="$(gcloud config get-value project)"
 
 cd infra/envs/prod
 
-# 1. Plan once to confirm the only diff is the new module's resources.
+# 1. Plan once to see the full delta. Should be ~12 new resources.
 terraform plan
 
-# 2. Import the existing GSM secret BEFORE applying. Otherwise TF will
-#    try to create a duplicate and crash with HTTP 409.
+# 2. Import the existing SA. Otherwise TF will try to create a
+#    duplicate and crash.
+terraform import \
+  module.bot_runtime.google_service_account.bot \
+  "projects/${PROJECT_ID}/serviceAccounts/mr-swede-sa@${PROJECT_ID}.iam.gserviceaccount.com"
+
+# 3. Import the existing GSM secret. Same reason.
 terraform import \
   module.bot_runtime.google_secret_manager_secret.discord_bot_secrets \
   "projects/${PROJECT_ID}/secrets/discord-bot-secrets"
 
-# 3. Plan again. The discord_bot_secrets resource should now show
-#    "no changes" (or only label drift). If it shows replacement,
-#    inspect the replication block -- the imported secret may use
-#    automatic replication while the module declares user_managed.
-#    Edit secret.tf to match what's actually in GSM.
+# 4. Plan again. The bot SA + discord_bot_secrets should now show
+#    in-place updates only (description on the SA, labels on the
+#    secret). NO destroy/replace lines anywhere.
+#
+#    If you see a forced replacement on the secret, the live secret's
+#    replication block doesn't match. The module declares
+#    `replication { auto {} }`; the secret in GSM has `automatic: {}`.
+#    If your project's secret uses user_managed instead, edit secret.tf.
 terraform plan
 
-# 4. Apply.
+# 5. Apply.
 terraform apply
 ```
 

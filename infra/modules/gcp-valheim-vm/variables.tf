@@ -79,7 +79,7 @@ variable "labels" {
   description = "Labels applied to all resources for cost attribution."
   type        = map(string)
   default = {
-    app       = "valheim"
+    app        = "valheim"
     managed_by = "terraform"
   }
 }

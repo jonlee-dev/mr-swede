@@ -20,7 +20,7 @@ locals {
     world_name                    = var.world_name
     # Stable Linux device path. GCE exposes attached disks under
     # /dev/disk/by-id/google-<device_name>; we set device_name below.
-    data_disk_device              = "/dev/disk/by-id/google-valheim-data"
+    data_disk_device = "/dev/disk/by-id/google-valheim-data"
   })
 }
 
@@ -44,16 +44,16 @@ resource "google_compute_instance" "valheim" {
 
   boot_disk {
     initialize_params {
-      image = var.boot_disk_image
-      size  = var.boot_disk_size_gb
-      type  = "pd-balanced"
+      image  = var.boot_disk_image
+      size   = var.boot_disk_size_gb
+      type   = "pd-balanced"
       labels = var.labels
     }
   }
 
   attached_disk {
     source      = google_compute_disk.world_data.id
-    device_name = "valheim-data"  # surfaces as /dev/disk/by-id/google-valheim-data
+    device_name = "valheim-data" # surfaces as /dev/disk/by-id/google-valheim-data
     mode        = "READ_WRITE"
   }
 

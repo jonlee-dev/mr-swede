@@ -63,17 +63,23 @@ instead of click-ops.
 
 1. **Connect Cloud Build to GitHub** in the GCP console
    (`Cloud Build → Triggers → Connect Repository → GitHub`). Required
-   prerequisite — TF cannot do the OAuth handshake.
+   prerequisite — TF cannot do the OAuth handshake. *(Likely already
+   done if a us-east4 deploy exists — the existing trigger proves it.)*
 2. `terraform plan` — sanity-check the new `module.bot_runtime` resources.
-3. `terraform import module.bot_runtime.google_secret_manager_secret.discord_bot_secrets projects/<project>/secrets/discord-bot-secrets`
-   — adopt the existing GSM secret instead of duplicating it.
-4. `terraform apply`.
-5. Trigger the first build manually
+3. **Import the two pre-existing resources** so TF adopts instead of
+   duplicating: the bot SA (`mr-swede-sa`) and the GSM secret
+   (`discord-bot-secrets`). See [TODO.md](./TODO.md) for the full
+   import commands.
+4. `terraform plan` again — should show ~10 new + 2 in-place updates,
+   no destroy/replace lines.
+5. `terraform apply`.
+6. Trigger the first build manually
    (`gcloud builds triggers run mr-swede-master --branch=master`) to
    replace the `cloudrun/hello` placeholder image with the real bot.
-6. Smoke test `/health` on the new us-central1 service URL, then in
+7. Smoke test `/health` on the new us-central1 service URL, then in
    Discord: `/ping`, `/valheim status`, `/valheim start`.
-7. Delete the old us-east4 service + AR repo by hand.
+8. Delete the old us-east4 trigger, service, and AR repo by hand
+   (otherwise every master push fires builds for both regions).
 
 Full instructions in [TODO.md](./TODO.md).
 

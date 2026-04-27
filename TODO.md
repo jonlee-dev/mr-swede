@@ -58,21 +58,31 @@ After this is done, the `google_cloudbuild_trigger` in `gcp-bot-runtime` works o
 
 ### 3. Apply `gcp-bot-runtime` (one-time)
 
-The first apply needs an extra step: import the existing `discord-bot-secrets` GSM secret so TF doesn't try to re-create it.
+Two resources predate Terraform and must be **imported** before apply, otherwise TF will try to create duplicates and crash:
+
+- The bot's SA `mr-swede-sa@mr-swede.iam.gserviceaccount.com` (created by hand back when the bot was click-ops-deployed).
+- The `discord-bot-secrets` GSM secret container.
 
 ```bash
 PROJECT_ID="$(gcloud config get-value project)"
 cd infra/envs/prod
 
-terraform plan        # Sanity check: should see new resources for module.bot_runtime
+terraform plan        # Sanity check: should see ~12 new resources for module.bot_runtime
+
+terraform import \
+  module.bot_runtime.google_service_account.bot \
+  "projects/${PROJECT_ID}/serviceAccounts/mr-swede-sa@${PROJECT_ID}.iam.gserviceaccount.com"
+
 terraform import \
   module.bot_runtime.google_secret_manager_secret.discord_bot_secrets \
   "projects/${PROJECT_ID}/secrets/discord-bot-secrets"
-terraform plan        # discord_bot_secrets should now show "no changes" (or only label drift)
+
+terraform plan        # Should now show ~10 new + ~2 in-place updates (description on
+                      # the SA, labels on the secret). NO destroy/replace lines.
 terraform apply
 ```
 
-If the post-import plan shows a forced replacement on `discord_bot_secrets`, the live secret's replication block doesn't match what `infra/modules/gcp-bot-runtime/secret.tf` declares. Edit that file to match (most likely: change `user_managed { ... }` to `automatic {}`).
+If the post-import plan shows a forced replacement on either resource, the live shape doesn't match what the module declares. The most likely culprit is the secret's replication block — verify with `gcloud secrets describe discord-bot-secrets`. The module declares `replication { auto {} }`; if the live secret uses `user_managed`, edit `infra/modules/gcp-bot-runtime/secret.tf` to match.
 
 ### 4. Trigger the first Cloud Build
 
@@ -93,14 +103,20 @@ curl "${SERVICE_URL}/health"
 
 Then in Discord: `/ping`, `/info`, `/valheim status`.
 
-### 6. Delete the old us-east4 service (manual)
+### 6. Delete the old us-east4 footprint (manual)
 
 ```bash
-gcloud run services delete mr-swede --region=us-east4
+# Delete the autocreated us-east4 trigger -- otherwise every master push
+# fires builds for both regions in parallel.
+gcloud builds triggers delete \
+  rmgpgab-mr-swede-us-east4-jonlee-dev-mr-swede--mastipa \
+  --quiet || echo "(already deleted, fine)"
+
+gcloud run services delete mr-swede --region=us-east4 --quiet
 gcloud artifacts repositories delete cloud-run-source-deploy --location=us-east4 --quiet
 ```
 
-These never lived in Terraform. Once the new us-central1 service is healthy, the old ones are dead weight.
+None of these ever lived in Terraform. Once the new us-central1 service is healthy, the old ones are dead weight (and the old trigger doubles every build cost).
 
 ---
 
