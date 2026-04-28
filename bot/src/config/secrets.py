@@ -149,7 +149,10 @@ class SecretManager:
         logger.info("Fetching string secret from GSM", path=secret_path)
         try:
             response = self.client.access_secret_version(request={"name": secret_path})
-            decoded = response.payload.data.decode("UTF-8").strip()
+            # Annotate explicitly: self.client is typed Any (lazy-loaded
+            # to tolerate missing dep), so the decoded chain inherits Any
+            # without this hint and mypy's no-any-return fires.
+            decoded: str = response.payload.data.decode("UTF-8").strip()
             self._string_cache[secret_path] = decoded
             return decoded
         except Exception as e:
