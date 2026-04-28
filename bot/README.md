@@ -49,7 +49,7 @@ poetry run python -m src.main
 
 `DISCORD_GUILD_ID` is worth setting during dev — slash commands sync to one guild instantly, vs ~1hr globally.
 
-### Tests
+### Tests + quality gates
 
 ```bash
 poetry run pytest                        # all tests with coverage
@@ -58,6 +58,29 @@ poetry run ruff check src tests
 poetry run ruff format src tests
 poetry run mypy src
 ```
+
+Or run everything CI runs in one shot:
+
+```bash
+make check                               # ruff format-check, ruff check, mypy, pytest, poetry-lock sync
+make fix                                 # ruff format + ruff check --fix (autofixes)
+```
+
+### Pre-commit hooks (one-time setup)
+
+The repo ships a `.pre-commit-config.yaml` at the root. Install both
+the per-commit and per-push hooks once:
+
+```bash
+poetry run pre-commit install --hook-type pre-commit --hook-type pre-push
+```
+
+After that:
+- **on commit**: ruff format + lint + mypy run on the staged files.
+- **on push**: `poetry.lock` sync check + `pytest tests/unit` run.
+
+Skipping is `git commit --no-verify` / `git push --no-verify` if you
+need to. CI runs the same gates regardless.
 
 ---
 

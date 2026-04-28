@@ -1,5 +1,12 @@
 # Pre-commit hooks for code quality
-# Install with: poetry run pre-commit install
+#
+# Install once after cloning:
+#     pre-commit install --hook-type pre-commit --hook-type pre-push
+#
+# pre-commit stage: fast static checks (ruff, mypy) on every commit
+# pre-push stage:   slower gates (poetry-lock-check, full pytest) on push
+#
+# `make -C bot check` runs the same gates manually if hooks aren't installed.
 
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
@@ -30,4 +37,29 @@ repos:
           - types-requests
         args: [--ignore-missing-imports]
         exclude: ^bot/tests/
+
+  # Local hooks: things that need the repo's tooling (poetry, pytest)
+  # rather than a pinned external repo.
+  - repo: local
+    hooks:
+      # Catches the "I edited pyproject.toml without re-running poetry lock"
+      # mistake before it reaches Cloud Build. Bot-only because only the
+      # bot uses poetry; the watcher / TF have no lock to drift.
+      - id: poetry-lock-check
+        name: bot poetry.lock in sync with pyproject.toml
+        language: system
+        entry: bash -c 'cd bot && (poetry lock --check 2>/dev/null || poetry check --lock)'
+        files: ^bot/(pyproject\.toml|poetry\.lock)$
+        pass_filenames: false
+
+      # Run unit tests on push (too slow for every commit). Catches the
+      # class of mistake where a refactor breaks tests we already had
+      # but no static check would surface.
+      - id: bot-pytest-unit
+        name: bot unit tests
+        language: system
+        entry: bash -c 'cd bot && poetry run pytest tests/unit -q --no-cov'
+        files: ^bot/(src|tests)/
+        pass_filenames: false
+        stages: [pre-push]
 
