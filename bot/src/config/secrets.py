@@ -100,7 +100,9 @@ class SecretManager:
             if secret_type == "discord":
                 return f"projects/{self._project_id}/secrets/discord-bot-secrets/versions/latest"
             if secret_type == "valheim_password":
-                return f"projects/{self._project_id}/secrets/valheim-server-password/versions/latest"
+                return (
+                    f"projects/{self._project_id}/secrets/valheim-server-password/versions/latest"
+                )
         return self.DEFAULT_SECRET_PATHS.get(secret_type, "")
 
     def _fetch_secret_json(self, secret_path: str) -> dict[str, Any] | None:
