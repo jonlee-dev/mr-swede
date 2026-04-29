@@ -1,20 +1,30 @@
 #!/usr/bin/env bash
-# Startup script for the Lavalink VM. Mirrors the Valheim VM's
-# startup-script shape: idempotent, runs every boot, drops files,
-# enables systemd units, lets the systemd ExecStartPre handle
-# container recreation on compose-yml changes.
+# Startup script for the Lavalink VM. Idempotent, runs every boot.
+#
+# Unlike the Valheim VM (which runs lloesche/valheim-server in
+# Docker), Lavalink runs as a plain systemd service from the
+# upstream Lavalink.jar. Reasons:
+#   - The community Docker image
+#     (ghcr.io/lavalink-devs/lavalink:*) has shipped a broken
+#     bundled JDK on multiple tags; running plain Java avoids it.
+#   - Lavalink is a single self-contained jar with no compose-style
+#     orchestration needs.
+#   - One less layer of indirection during cold start (matters when
+#     the idle-watcher stops + restarts this VM frequently).
 #
 # This file is a Terraform template -- $${...}-style placeholders are
 # interpolated by templatefile() in the gcp-lavalink-vm module.
-# Embedded files use base64 encoding to dodge yaml/heredoc edge cases
-# with the application.yml indentation.
+# Embedded files use base64 encoding to dodge yaml/heredoc edge
+# cases.
 #
 # Boot sequence:
-#   1. Install Docker + docker-compose plugin (first boot only)
-#   2. Drop docker-compose, application.yml, fetch-secrets script,
-#      and the two systemd units in place from base64 blobs
-#   3. Reload + enable + restart systemd units. lavalink-fetch-secrets
-#      runs first as a Requires= dep of lavalink.service.
+#   1. Install JDK 21 + curl (first boot only)
+#   2. Create the lavalink user (first boot only)
+#   3. Download Lavalink.jar to /opt/lavalink/ (first boot or when
+#      LAVALINK_VERSION changes)
+#   4. Drop application.yml, fetch-secrets script, two systemd units
+#      from base64 blobs (every boot, idempotent overwrite)
+#   5. Reload + enable + restart systemd units
 #
 # Logs land at /var/log/lavalink-startup-script.log AND in the
 # journal under unit `google-startup-scripts.service`.
@@ -24,38 +34,39 @@ exec > >(tee -a /var/log/lavalink-startup-script.log) 2>&1
 
 echo "=== Lavalink startup-script begin: $(date -u +%FT%TZ) ==="
 
-# 1. Install Docker if missing. Resilient: re-runs on a fresh VM image
-#    or after a manual `apt purge docker-*`.
-if ! command -v docker >/dev/null 2>&1; then
-  echo "Docker missing; installing from Debian's official repo."
+LAVALINK_VERSION="4.1.0"
+LAVALINK_JAR_URL="https://github.com/lavalink-devs/Lavalink/releases/download/$${LAVALINK_VERSION}/Lavalink.jar"
+
+# 1. Install JDK + curl. Skip if java already on PATH (subsequent boots).
+if ! command -v java >/dev/null 2>&1; then
+  echo "Java missing; installing JDK 21 from Debian's apt repo."
   apt-get update
   DEBIAN_FRONTEND=noninteractive apt-get install -y \
-    ca-certificates curl gnupg python3 jq
-
-  install -m 0755 -d /etc/apt/keyrings
-  curl -fsSL https://download.docker.com/linux/debian/gpg \
-    | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-  chmod a+r /etc/apt/keyrings/docker.gpg
-
-  echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian $(. /etc/os-release && echo $VERSION_CODENAME) stable" \
-    > /etc/apt/sources.list.d/docker.list
-
-  apt-get update
-  DEBIAN_FRONTEND=noninteractive apt-get install -y \
-    docker-ce docker-ce-cli containerd.io docker-compose-plugin
+    openjdk-21-jre-headless curl ca-certificates python3
 fi
 
-systemctl enable --now docker
+# 2. Create the runtime user. Same pattern as lloesche's valheim user.
+if ! id -u lavalink >/dev/null 2>&1; then
+  useradd --system --home /opt/lavalink --shell /usr/sbin/nologin lavalink
+fi
 
-# 2. Drop runtime artifacts. Overwrite every boot so a TF template edit
-#    propagates after the next reboot.
-mkdir -p /opt/lavalink /opt/lavalink/scripts /opt/lavalink/plugins /etc/lavalink
+# 3. Download Lavalink.jar (first boot or version change). The "marker"
+#    file holds the version we last installed; if it differs from the
+#    target version, re-download.
+mkdir -p /opt/lavalink /opt/lavalink/plugins /etc/lavalink
+INSTALLED_MARKER="/opt/lavalink/.installed-version"
+INSTALLED_VERSION=""
+[ -f "$INSTALLED_MARKER" ] && INSTALLED_VERSION="$(cat "$INSTALLED_MARKER")"
 
-base64 -d > /opt/lavalink/docker-compose.yml <<'__LAVALINK_BLOB_EOF__'
-${base64encode(docker_compose)}
-__LAVALINK_BLOB_EOF__
-chmod 0644 /opt/lavalink/docker-compose.yml
+if [ "$INSTALLED_VERSION" != "$LAVALINK_VERSION" ] || [ ! -f /opt/lavalink/Lavalink.jar ]; then
+  echo "Downloading Lavalink $${LAVALINK_VERSION} (was: $${INSTALLED_VERSION:-none})"
+  curl -fsSL --retry 3 -o /opt/lavalink/Lavalink.jar.new "$LAVALINK_JAR_URL"
+  mv /opt/lavalink/Lavalink.jar.new /opt/lavalink/Lavalink.jar
+  echo "$LAVALINK_VERSION" > "$INSTALLED_MARKER"
+fi
 
+# 4. Drop runtime artifacts. Overwrite every boot so a TF template
+#    edit propagates after the next reboot.
 base64 -d > /opt/lavalink/application.yml <<'__LAVALINK_BLOB_EOF__'
 ${base64encode(application_yml)}
 __LAVALINK_BLOB_EOF__
@@ -64,6 +75,7 @@ chmod 0644 /opt/lavalink/application.yml
 base64 -d > /opt/lavalink/scripts/fetch-secrets.sh <<'__LAVALINK_BLOB_EOF__'
 ${base64encode(fetch_secrets_sh)}
 __LAVALINK_BLOB_EOF__
+mkdir -p /opt/lavalink/scripts
 chmod 0750 /opt/lavalink/scripts/fetch-secrets.sh
 
 base64 -d > /etc/systemd/system/lavalink.service <<'__LAVALINK_BLOB_EOF__'
@@ -81,12 +93,14 @@ cat > /etc/lavalink/server.env <<'__LAVALINK_BLOB_EOF__'
 SERVER_PORT=2333
 __LAVALINK_BLOB_EOF__
 
-# 3. Reload + enable + RESTART systemd units. Restart (not just `enable
-#    --now`) is intentional: systemd may have already started these
-#    units in parallel with google-startup-scripts on boot, before we
-#    wrote the new unit-file contents to disk. In that case `enable
-#    --now` is a no-op and the OLD unit definition stays running.
-#    Restart forces systemd to re-read the freshly-written unit files.
+# Make sure lavalink user owns its dirs (file drops above ran as root).
+chown -R lavalink:lavalink /opt/lavalink
+
+# 5. Reload + enable + RESTART. Restart (not just `enable --now`) is
+#    intentional -- if systemd auto-started the units in parallel
+#    with google-startup-scripts on boot, they'd be running with
+#    stale on-disk unit content. Restart re-reads the freshly-
+#    written units.
 systemctl daemon-reload
 systemctl enable lavalink-fetch-secrets.service lavalink.service
 systemctl restart lavalink-fetch-secrets.service

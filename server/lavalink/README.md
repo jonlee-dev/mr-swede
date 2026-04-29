@@ -8,15 +8,22 @@ ops procedures translate directly.
 
 ```
 server/lavalink/
-├── docker-compose.yml          # the only thing the VM actually runs
 ├── application.yml             # Lavalink config (Spring Boot env substitution)
 ├── startup-script.sh.tftpl     # Terraform template; rendered into metadata.startup-script
 ├── scripts/
 │   ├── fetch-secrets.sh        # pulls SERVER_PASSWORD from Secret Manager
 │   ├── lavalink-fetch-secrets.service  # systemd oneshot
-│   └── lavalink.service                # systemd service wrapping compose
+│   └── lavalink.service                # systemd service running java -jar directly
 └── README.md
 ```
+
+Note: no Dockerfile / docker-compose. Lavalink runs as a plain
+systemd service from the upstream Lavalink.jar. The
+`ghcr.io/lavalink-devs/lavalink:*` Docker images shipped a broken
+bundled JDK on multiple tags (random `ClassFormatError` on bootstrap
+classes), and Lavalink is a self-contained jar with no
+compose-style orchestration needs -- so the Docker layer was just
+an indirection without benefit.
 
 ## Boot-time data flow
 
@@ -25,26 +32,54 @@ google-guest-agent fetches metadata.startup-script (every boot)
         │
         └── runs the rendered bash script as root
                   │
-                  ├── installs Docker (first boot only)
-                  └── drops these files:
-                       /opt/lavalink/docker-compose.yml
+                  ├── installs openjdk-21-jre + curl (first boot only)
+                  ├── creates `lavalink` system user (first boot only)
+                  ├── downloads Lavalink.jar to /opt/lavalink/Lavalink.jar
+                  │   (first boot, or when LAVALINK_VERSION in the script changes)
+                  └── drops these files (every boot):
                        /opt/lavalink/application.yml
                        /opt/lavalink/scripts/fetch-secrets.sh
                        /etc/systemd/system/lavalink-fetch-secrets.service
                        /etc/systemd/system/lavalink.service
                        /etc/lavalink/server.env  (SERVER_PORT)
 
-systemd starts lavalink.service
+systemd starts lavalink.service (User=lavalink)
         │
         └── Requires=lavalink-fetch-secrets.service (runs first)
                   │
                   └── writes /etc/lavalink/secret.env (LAVALINK_SERVER_PASSWORD, 0600)
         │
-        └── docker compose up reads both env files
+        └── EnvironmentFile= loads both env files
+        │
+        └── ExecStart=/usr/bin/java -Xmx1G -jar /opt/lavalink/Lavalink.jar
                 │
-                └── Lavalink JVM resolves ${LAVALINK_SERVER_PASSWORD}
-                    from the env at boot via Spring Boot
+                └── Spring Boot resolves ${LAVALINK_SERVER_PASSWORD}
+                    from the systemd env at startup
 ```
+
+## Why no Docker?
+
+The two Valheim runtime artifacts (`server/`) use Docker because the
+canonical `lloesche/valheim-server` image ships a curated bundle of
+the Valheim binary + auto-updater + cron'd backups + tooling. There's
+real upstream value from running their image.
+
+Lavalink has no comparable curation: it's literally `java -jar
+Lavalink.jar`. The official Docker images
+(`ghcr.io/lavalink-devs/lavalink:*`) bundle a JDK and provide no
+extras over running the jar yourself. Worse, those images have shipped
+broken jars and broken bundled JDKs at various points; running plain
+Java on the VM avoids both classes of upstream regressions.
+
+Trade-offs we're accepting by going Docker-less:
+
+- **Lavalink upgrades require a startup-script edit** (bumping
+  `LAVALINK_VERSION`) rather than a tag bump. Acceptable -- we
+  already edit the script for every meaningful runtime change.
+- **No container sandbox.** Lavalink runs as the unprivileged
+  `lavalink` system user, which is the standard non-Docker
+  isolation. The VM only runs Lavalink, so process-level isolation
+  isn't load-bearing.
 
 ## Why a separate Lavalink VM (not a sidecar in the bot)?
 

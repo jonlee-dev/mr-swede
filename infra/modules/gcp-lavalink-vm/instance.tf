@@ -17,7 +17,6 @@ locals {
   server_dir = "${path.module}/../../../server/lavalink"
 
   startup_script = templatefile("${local.server_dir}/startup-script.sh.tftpl", {
-    docker_compose                 = file("${local.server_dir}/docker-compose.yml")
     application_yml                = file("${local.server_dir}/application.yml")
     fetch_secrets_sh               = file("${local.server_dir}/scripts/fetch-secrets.sh")
     lavalink_service               = file("${local.server_dir}/scripts/lavalink.service")
