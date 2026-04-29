@@ -159,6 +159,11 @@ resource "google_cloud_run_v2_service" "bot" {
         name  = "LAVALINK_PASSWORD_SECRET_PATH"
         value = local.lavalink_password_secret_path
       }
+
+      env {
+        name  = "MUSIC_COMMAND_CHANNEL_ID"
+        value = var.music_command_channel_id
+      }
     }
   }
 

@@ -8,8 +8,12 @@ packages = [{include = "src"}]
 
 [tool.poetry.dependencies]
 python = "^3.12"
-# Discord (no voice extras: we don't play audio)
-"discord.py" = "^2.3.2"
+# Discord with voice extras (PyNaCl). Even though Lavalink streams the
+# actual audio frames to Discord, discord.py's voice handshake still
+# requires PyNaCl to encrypt the voice gateway negotiation. Without
+# it, `await voice_channel.connect(cls=wavelink.Player)` fails with
+# "PyNaCl is not installed, voice will NOT be supported."
+"discord.py" = {extras = ["voice"], version = "^2.3.2"}
 # HTTP server for Cloud Run health checks
 fastapi = "^0.109.0"
 uvicorn = {extras = ["standard"], version = "^0.27.0"}

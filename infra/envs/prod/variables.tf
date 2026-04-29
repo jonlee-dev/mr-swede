@@ -43,3 +43,9 @@ variable "discord_guild_id" {
   type        = string
   default     = ""
 }
+
+variable "music_command_channel_id" {
+  description = "Discord channel ID where /music * commands are accepted. Empty = anywhere. Set to your #bot-spam channel ID to scope command invocation. The bot still joins whatever VOICE channel the user is in -- this only governs where the slash command is accepted."
+  type        = string
+  default     = ""
+}

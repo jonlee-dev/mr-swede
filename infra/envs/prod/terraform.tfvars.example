@@ -14,3 +14,8 @@ valheim_initial_world = "default"
 # (commands sync globally; ~1hr propagation). Set to a test-server ID
 # during dev for instant sync.
 # discord_guild_id = "123456789012345678"
+
+# Discord channel ID where /music * is accepted. Empty = anywhere.
+# In Discord: enable Developer Mode (Settings > Advanced), right-click
+# the channel, "Copy Channel ID".
+# music_command_channel_id = "123456789012345678"

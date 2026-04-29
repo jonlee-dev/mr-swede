@@ -54,6 +54,7 @@ module "bot_runtime" {
   lavalink_instance_self_link = module.lavalink_vm.instance_self_link
   lavalink_password_secret_id = module.lavalink_vm.server_password_secret_id
   lavalink_port               = module.lavalink_vm.lavalink_port
+  music_command_channel_id    = var.music_command_channel_id
   github_owner                = var.github_owner
   github_repo                 = var.github_repo
   discord_guild_id            = var.discord_guild_id

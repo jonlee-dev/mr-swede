@@ -41,6 +41,12 @@ variable "lavalink_port" {
   default     = 2333
 }
 
+variable "music_command_channel_id" {
+  description = "Discord channel ID where /music * commands are accepted. Empty = no restriction (commands work anywhere). Set to your #bot-spam channel ID to scope. The bot still joins whatever VOICE channel the user is in -- this only restricts the slash-command invocation channel."
+  type        = string
+  default     = ""
+}
+
 variable "github_owner" {
   description = "GitHub account or org that owns the bot's source repo (used by the Cloud Build trigger)."
   type        = string
