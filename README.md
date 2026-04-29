@@ -238,6 +238,7 @@ MIT — see [LICENSE](LICENSE).
 
 ## Documentation
 
+- **[docs/prd.md](./docs/prd.md)** — Product requirements + target architecture. Read this first when joining the repo or before a non-trivial change.
 - [docs/architecture.md](./docs/architecture.md) — Component diagram + interface boundaries
 - [docs/bootstrap.md](./docs/bootstrap.md) — One-time GCP setup (state bucket, APIs, WIF)
 - [docs/runbook.md](./docs/runbook.md) — Recovery procedures
