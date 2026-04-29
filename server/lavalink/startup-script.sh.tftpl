@@ -38,11 +38,16 @@ LAVALINK_VERSION="4.1.0"
 LAVALINK_JAR_URL="https://github.com/lavalink-devs/Lavalink/releases/download/$${LAVALINK_VERSION}/Lavalink.jar"
 
 # 1. Install JDK + curl. Skip if java already on PATH (subsequent boots).
+#
+# Debian 12 (bookworm) ships openjdk-17-jre-headless, NOT 21. Lavalink
+# 4 requires "Java 17 LTS or newer", so 17 is fine. If we ever bump
+# to a Lavalink minor that requires 21+, switch to the Adoptium APT
+# repo (deb.adoptium.net) -- it offers temurin-21-jre on bookworm.
 if ! command -v java >/dev/null 2>&1; then
-  echo "Java missing; installing JDK 21 from Debian's apt repo."
+  echo "Java missing; installing JDK 17 from Debian's apt repo."
   apt-get update
   DEBIAN_FRONTEND=noninteractive apt-get install -y \
-    openjdk-21-jre-headless curl ca-certificates python3
+    openjdk-17-jre-headless curl ca-certificates python3
 fi
 
 # 2. Create the runtime user. Same pattern as lloesche's valheim user.
