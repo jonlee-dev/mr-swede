@@ -18,6 +18,7 @@ logger = get_logger(__name__)
 COG_MODULES = (
     "src.cogs.diagnostics",
     "src.cogs.valheim",
+    "src.cogs.music",
 )
 
 

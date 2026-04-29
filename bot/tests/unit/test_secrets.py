@@ -143,6 +143,6 @@ class TestSecretDataClasses:
             secrets.token = "new"
 
     def test_app_secrets_frozen(self):
-        app = AppSecrets(discord=None, valheim_password=None)
+        app = AppSecrets(discord=None, valheim_password=None, lavalink_password=None)
         with pytest.raises(AttributeError):
             app.discord = DiscordBotSecrets(id="i", token="t", public_key="k")

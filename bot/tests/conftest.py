@@ -29,6 +29,7 @@ def mock_secrets() -> AppSecrets:
             public_key="test-public-key",
         ),
         valheim_password="test-server-password",
+        lavalink_password="test-lavalink-password",
     )
 
 

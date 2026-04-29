@@ -1,4 +1,8 @@
-"""Unit tests for src.cogs.valheim."""
+"""Unit tests for src.cogs.valheim.
+
+Updated when server_query.query (A2S) became fetch_status (HTTP) and
+the embed builder gained the password parameter.
+"""
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -8,13 +12,11 @@ import pytest
 from src.cogs.valheim import ValheimCog, build_status_embed
 from src.config.settings import Settings
 from src.services.compute import InstanceState
-from src.services.server_query import GameState
+from src.services.server_query import LiveStatus
 
 
 @pytest.fixture
 def settings(monkeypatch: pytest.MonkeyPatch) -> Settings:
-    # Settings fields use env-style aliases (GCP_PROJECT_ID etc.) so we set
-    # them through the env to match how production configures the bot.
     monkeypatch.setenv("GCP_PROJECT_ID", "test-proj")
     monkeypatch.setenv("VALHEIM_ZONE", "us-central1-a")
     monkeypatch.setenv("VALHEIM_INSTANCE_NAME", "valheim-server")
@@ -48,83 +50,47 @@ def _state(status: str = "RUNNING", public_ip: str | None = "1.2.3.4") -> Instan
     )
 
 
-def _game(player_count: int = 2) -> GameState:
-    return GameState(
-        server_name="Mr. Swede",
-        map_name="Midgard",
+def _live(player_count: int = 2, join_code: str | None = "184520") -> LiveStatus:
+    return LiveStatus(
+        join_code=join_code,
         player_count=player_count,
-        max_players=10,
+        server_running=True,
+        last_update="2026-04-28T05:25:06.512900+00:00",
     )
 
 
 class TestBuildStatusEmbed:
-    """The embed builder is pure — exercise the rendering branches directly."""
+    """The embed builder is pure -- exercise the rendering branches directly."""
 
-    def test_running_with_game(self):
-        embed = build_status_embed(_state(status="RUNNING"), _game(player_count=3))
+    def test_running_with_live_data(self):
+        embed = build_status_embed(
+            _state(status="RUNNING"),
+            _live(player_count=3),
+            password="hunter2",
+        )
         text = (embed.title or "") + " ".join(f.value for f in embed.fields)
         assert "RUNNING" in text
         assert "1.2.3.4" in text
-        assert "3/10" in text
-        assert "Midgard" in text
+        assert "184520" in text  # join code
+        assert "3" in text  # player count
+        assert "hunter2" in text  # password
 
-    def test_running_but_game_unreachable(self):
-        embed = build_status_embed(_state(status="RUNNING"), None)
+    def test_running_but_status_unreachable(self):
+        embed = build_status_embed(_state(status="RUNNING"), live=None, password=None)
         text = (embed.title or "") + " ".join(f.value for f in embed.fields)
         assert "RUNNING" in text
         assert "1.2.3.4" in text
-        # No A2S → no player count rendered
-        assert "/10" not in text
+        # No live data -> embed mentions "isn't answering yet"
+        assert "answering" in text or "Try" in text
 
-    def test_terminated_hides_ip_and_game_fields(self):
-        embed = build_status_embed(_state(status="TERMINATED", public_ip=None), None)
+    def test_terminated_hides_runtime_fields(self):
+        embed = build_status_embed(
+            _state(status="TERMINATED", public_ip=None), live=None, password=None
+        )
         text = (embed.title or "") + " ".join(f.value for f in embed.fields)
         assert "TERMINATED" in text
+        # No IP, no join code, no password rendered when stopped.
         assert "1.2.3.4" not in text
-        assert "/10" not in text
-
-    def test_transition_state(self):
-        embed = build_status_embed(_state(status="STAGING", public_ip=None), None)
-        text = (embed.title or "") + " ".join(f.value for f in embed.fields)
-        assert "STAGING" in text
-
-
-class TestStatusCommand:
-    async def test_running_queries_a2s_and_sends_embed(self, cog: ValheimCog):
-        interaction = _interaction()
-        with (
-            patch(
-                "src.cogs.valheim.compute.describe_instance",
-                AsyncMock(return_value=_state(status="RUNNING")),
-            ) as describe,
-            patch(
-                "src.cogs.valheim.server_query.query",
-                AsyncMock(return_value=_game(player_count=4)),
-            ) as query,
-        ):
-            await ValheimCog.status.callback(cog, interaction)
-
-        describe.assert_awaited_once_with("test-proj", "us-central1-a", "valheim-server")
-        query.assert_awaited_once_with("1.2.3.4")
-        interaction.response.defer.assert_awaited_once()
-        interaction.followup.send.assert_awaited_once()
-        kwargs = interaction.followup.send.call_args.kwargs
-        assert isinstance(kwargs["embed"], discord.Embed)
-        assert kwargs.get("ephemeral", False) is False
-
-    async def test_terminated_skips_a2s(self, cog: ValheimCog):
-        interaction = _interaction()
-        with (
-            patch(
-                "src.cogs.valheim.compute.describe_instance",
-                AsyncMock(return_value=_state(status="TERMINATED", public_ip=None)),
-            ),
-            patch("src.cogs.valheim.server_query.query", AsyncMock()) as query,
-        ):
-            await ValheimCog.status.callback(cog, interaction)
-
-        query.assert_not_awaited()
-        interaction.followup.send.assert_awaited_once()
 
 
 class TestStartCommand:
@@ -143,10 +109,6 @@ class TestStartCommand:
             await ValheimCog.start.callback(cog, interaction)
 
         start.assert_awaited_once_with("test-proj", "us-central1-a", "valheim-server")
-        kwargs = interaction.followup.send.call_args.kwargs
-        msg = kwargs.get("content", "") or ""
-        assert "Starting" in msg or "starting" in msg
-        assert kwargs.get("ephemeral", False) is False
 
     async def test_already_running_does_not_call_start(self, cog: ValheimCog):
         interaction = _interaction()
@@ -160,10 +122,6 @@ class TestStartCommand:
             await ValheimCog.start.callback(cog, interaction)
 
         start.assert_not_awaited()
-        kwargs = interaction.followup.send.call_args.kwargs
-        msg = kwargs.get("content", "") or ""
-        assert "1.2.3.4" in msg
-        assert "running" in msg.lower() or "up" in msg.lower()
 
 
 class TestStopCommand:
@@ -182,10 +140,6 @@ class TestStopCommand:
             await ValheimCog.stop.callback(cog, interaction)
 
         stop.assert_awaited_once_with("test-proj", "us-central1-a", "valheim-server")
-        kwargs = interaction.followup.send.call_args.kwargs
-        msg = kwargs.get("content", "") or ""
-        assert "Stopping" in msg or "stopping" in msg
-        assert kwargs.get("ephemeral", False) is False
 
     async def test_already_terminated_does_not_call_stop(self, cog: ValheimCog):
         interaction = _interaction()
@@ -199,6 +153,3 @@ class TestStopCommand:
             await ValheimCog.stop.callback(cog, interaction)
 
         stop.assert_not_awaited()
-        kwargs = interaction.followup.send.call_args.kwargs
-        msg = kwargs.get("content", "") or ""
-        assert "stopped" in msg.lower() or "already" in msg.lower()

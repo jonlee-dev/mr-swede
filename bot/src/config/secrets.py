@@ -44,6 +44,7 @@ class AppSecrets:
 
     discord: DiscordBotSecrets | None
     valheim_password: str | None
+    lavalink_password: str | None
 
 
 class SecretManager:
@@ -55,6 +56,7 @@ class SecretManager:
     DEFAULT_SECRET_PATHS: dict[str, str] = {
         "discord": "",  # Set via DISCORD_SECRET_PATH env var
         "valheim_password": "",  # Set via VALHEIM_PASSWORD_SECRET_PATH env var
+        "lavalink_password": "",  # Set via LAVALINK_PASSWORD_SECRET_PATH env var
     }
 
     def __init__(
@@ -102,6 +104,10 @@ class SecretManager:
             if secret_type == "valheim_password":
                 return (
                     f"projects/{self._project_id}/secrets/valheim-server-password/versions/latest"
+                )
+            if secret_type == "lavalink_password":
+                return (
+                    f"projects/{self._project_id}/secrets/lavalink-server-password/versions/latest"
                 )
         return self.DEFAULT_SECRET_PATHS.get(secret_type, "")
 
@@ -220,10 +226,24 @@ class SecretManager:
         secret_path = self._get_secret_path("valheim_password")
         return self._fetch_secret_string(secret_path)
 
+    def get_lavalink_password(self) -> str | None:
+        """Return the Lavalink REST/WS server password (plain string).
+
+        Same pattern as get_valheim_password: env var beats GSM. The
+        bot uses this as the bearer header on every Lavalink REST/WS
+        call.
+        """
+        if os.environ.get("LAVALINK_PASSWORD"):
+            logger.info("Using LAVALINK_PASSWORD from environment")
+            return os.environ["LAVALINK_PASSWORD"]
+        secret_path = self._get_secret_path("lavalink_password")
+        return self._fetch_secret_string(secret_path)
+
     def get_all_secrets(self) -> AppSecrets:
         return AppSecrets(
             discord=self.get_discord_secrets(),
             valheim_password=self.get_valheim_password(),
+            lavalink_password=self.get_lavalink_password(),
         )
 
     def clear_cache(self) -> None:

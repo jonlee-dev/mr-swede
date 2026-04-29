@@ -48,6 +48,25 @@ class Settings(BaseSettings):
         description="TCP port on the Valheim VM where the log-scraping status server listens. Must match server/scripts/status-server.py + the firewall rule in gcp-valheim-vm.",
     )
 
+    # Lavalink VM target -- consumed by /music * commands.
+    lavalink_instance_name: str = Field(default="lavalink-server", alias="LAVALINK_INSTANCE_NAME")
+    lavalink_zone: str = Field(default="us-central1-a", alias="LAVALINK_ZONE")
+    lavalink_host: str = Field(
+        default="",
+        alias="LAVALINK_HOST",
+        description="Hostname/IP of the Lavalink server. Empty = resolve at runtime via compute.describe_instance() on the lavalink VM. Override for local dev when you have a Lavalink running locally.",
+    )
+    lavalink_port: int = Field(default=2333, alias="LAVALINK_PORT")
+
+    # Music command channel scope. Empty = no restriction (commands work
+    # anywhere); set to a Discord channel ID (string) to scope /music *
+    # to that channel and ephemeral-redirect everywhere else.
+    music_command_channel_id: str = Field(
+        default="",
+        alias="MUSIC_COMMAND_CHANNEL_ID",
+        description="Discord channel ID where /music * commands are accepted. Empty = no restriction. The decorator in src.utils.checks.requires_channel reads this.",
+    )
+
     # HTTP server (Cloud Run health checks)
     host: str = Field(default="0.0.0.0", alias="HOST")
     port: int = Field(default=8080, alias="PORT")
@@ -60,6 +79,11 @@ class Settings(BaseSettings):
     # through GSM; this exists so devs can `export DISCORD_TOKEN=...` and run.
     discord_token: SecretStr | None = Field(default=None, alias="DISCORD_TOKEN")
     discord_application_id: str | None = Field(default=None, alias="DISCORD_APPLICATION_ID")
+
+    # Local-dev fallback for the Lavalink password. Production reads
+    # via VALHEIM_PASSWORD_SECRET_PATH; this is for `poetry run python
+    # -m src.main` against a localhost Lavalink.
+    lavalink_password: SecretStr | None = Field(default=None, alias="LAVALINK_PASSWORD")
 
     @model_validator(mode="before")
     @classmethod

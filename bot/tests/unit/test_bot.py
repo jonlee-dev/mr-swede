@@ -20,12 +20,13 @@ def secrets_with_discord() -> AppSecrets:
     return AppSecrets(
         discord=DiscordBotSecrets(id="123", token="gsm-token", public_key="pk"),
         valheim_password=None,
+        lavalink_password=None,
     )
 
 
 @pytest.fixture
 def secrets_empty() -> AppSecrets:
-    return AppSecrets(discord=None, valheim_password=None)
+    return AppSecrets(discord=None, valheim_password=None, lavalink_password=None)
 
 
 class TestGetBotToken:

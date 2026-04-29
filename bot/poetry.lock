@@ -197,6 +197,17 @@ typing_extensions = {version = ">=4.5", markers = "python_version < \"3.13\""}
 trio = ["trio (>=0.31.0)", "trio (>=0.32.0)"]
 
 [[package]]
+name = "async-timeout"
+version = "5.0.1"
+description = "Timeout context manager for asyncio programs"
+optional = false
+python-versions = ">=3.8"
+files = [
+    {file = "async_timeout-5.0.1-py3-none-any.whl", hash = "sha256:39e3809566ff85354557ec2398b55e096c8364bacac9405a7a1fa429e77fe76c"},
+    {file = "async_timeout-5.0.1.tar.gz", hash = "sha256:d9321a7a3d5a6a5e187e824d2fa0793ce379a202935782d555d6e9d2735677d3"},
+]
+
+[[package]]
 name = "attrs"
 version = "25.4.0"
 description = "Classes Without Boilerplate"
@@ -2499,6 +2510,24 @@ files = [
 anyio = ">=3.0.0"
 
 [[package]]
+name = "wavelink"
+version = "3.4.1"
+description = "A robust and powerful, fully asynchronous Lavalink wrapper built for discord.py in Python."
+optional = false
+python-versions = ">=3.10"
+files = [
+    {file = "wavelink-3.4.1-py3-none-any.whl", hash = "sha256:90f7e29b262b726417ce8f02d2725935a018e4938825289683a9548609206a2b"},
+    {file = "wavelink-3.4.1.tar.gz", hash = "sha256:0aa2db5e4e7d6b0702a69e4cdb7161b447b7a5735955bce5bbadb28235c5478e"},
+]
+
+[package.dependencies]
+aiohttp = ">=3.7.4,<4"
+async-timeout = "*"
+"discord.py" = ">=2.0.1"
+typing-extensions = "*"
+yarl = ">=1.9.2"
+
+[[package]]
 name = "websockets"
 version = "15.0.1"
 description = "An implementation of the WebSocket Protocol (RFC 6455 & 7692)"
@@ -2723,4 +2752,4 @@ propcache = ">=0.2.1"
 [metadata]
 lock-version = "2.0"
 python-versions = "^3.12"
-content-hash = "20e8b542056dc4f2c5c7b89cf0a08d8e1dbf9e588f2310e00c6a28b680dadf7d"
+content-hash = "8007506f8d97030c9638f9a8908e3a8bba42953be1757a7b101b11d1a4880b18"

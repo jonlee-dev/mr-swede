@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "mr-swede"
-version = "3.2.0"
+version = "4.0.0"
 description = "Discord-controlled Valheim server (start/stop/status)"
 authors = ["Jonathan Lee"]
 readme = "README.md"
@@ -26,6 +26,9 @@ google-cloud-compute = "^1.19.0"
 # explicitly because /valheim status uses it directly to fetch
 # /status.json from the VM's log-scraping daemon.
 httpx = "^0.27.0"
+# Lavalink client. Wavelink is the discord.py-aligned, smaller-surface
+# choice (vs Pomice / Mafic). Drives the music feature.
+wavelink = "^3.4.0"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.0.0"
