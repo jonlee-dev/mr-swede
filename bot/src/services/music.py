@@ -51,14 +51,22 @@ def _to_track_info(track: wavelink.Playable, requester_id: int | None = None) ->
     )
 
 
-async def connect_node(host: str, port: int, password: str) -> None:
+async def connect_node(client: discord.Client, host: str, port: int, password: str) -> None:
     """Open the WebSocket to Lavalink. Idempotent: re-connecting an
     already-connected pool is a no-op in wavelink 3.x.
+
+    The `client=` kwarg is REQUIRED -- wavelink uses the discord.py
+    Client to forward VOICE_STATE_UPDATE / VOICE_SERVER_UPDATE events
+    that Lavalink needs to actually open the voice connection.
+    Without it, Pool.connect() returns "successfully" but the node
+    never reaches CONNECTED state and `Pool.fetch_node()` raises
+    "No nodes are currently assigned to the wavelink.Pool in a
+    CONNECTED state."
     """
     uri = f"http://{host}:{port}"
     logger.info("Connecting to Lavalink node", uri=uri)
     node = wavelink.Node(uri=uri, password=password, identifier="mr-swede-main")
-    await wavelink.Pool.connect(nodes=[node])
+    await wavelink.Pool.connect(client=client, nodes=[node])
     logger.info("Lavalink node connected")
 
 

@@ -81,7 +81,7 @@ class MusicCog(commands.GroupCog, name="music"):
             logger.error("No Lavalink password available; cannot connect to node")
             return False
         try:
-            await music.connect_node(host, self._settings.lavalink_port, password)
+            await music.connect_node(self.bot, host, self._settings.lavalink_port, password)
             return True
         except Exception as e:
             logger.error("Failed to connect Lavalink node", error=str(e))
