@@ -73,7 +73,9 @@ logging:
     path: ./logs/
   level:
     root: INFO
-    lavalink: INFO
+    lavalink: DEBUG
+    dev.lavalink: DEBUG
+    com.sedmelluq: DEBUG
   request:
     enabled: true
     includeClientInfo: true
