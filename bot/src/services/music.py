@@ -51,23 +51,61 @@ def _to_track_info(track: wavelink.Playable, requester_id: int | None = None) ->
     )
 
 
-async def connect_node(client: discord.Client, host: str, port: int, password: str) -> None:
-    """Open the WebSocket to Lavalink. Idempotent: re-connecting an
-    already-connected pool is a no-op in wavelink 3.x.
+_NODE_IDENTIFIER = "mr-swede-main"
+_CONNECT_TIMEOUT_SECONDS = 30.0
+_CONNECT_POLL_INTERVAL_SECONDS = 0.5
 
-    The `client=` kwarg is REQUIRED -- wavelink uses the discord.py
-    Client to forward VOICE_STATE_UPDATE / VOICE_SERVER_UPDATE events
-    that Lavalink needs to actually open the voice connection.
-    Without it, Pool.connect() returns "successfully" but the node
-    never reaches CONNECTED state and `Pool.fetch_node()` raises
-    "No nodes are currently assigned to the wavelink.Pool in a
-    CONNECTED state."
+
+async def connect_node(client: discord.Client, host: str, port: int, password: str) -> None:
+    """Open the WebSocket to Lavalink and wait until the node is CONNECTED.
+
+    Two non-obvious behaviors of wavelink 3.x covered here:
+
+      1. `Pool.connect()` requires a `client=` kwarg. Without it, the
+         pool can't subscribe to discord.py's voice gateway events
+         and the node never finishes its handshake.
+
+      2. `Pool.connect()` is fire-and-forget -- it queues the
+         WebSocket connection and returns immediately, BEFORE the
+         node reaches CONNECTED state. Calling `Playable.search()`
+         right after raises "No nodes are currently assigned to the
+         wavelink.Pool in a CONNECTED state". We poll node.status
+         here until ready (or timeout).
+
+      3. Idempotent: if a node with the same identifier is already
+         in the pool and CONNECTED, we return immediately without
+         re-creating it.
     """
     uri = f"http://{host}:{port}"
+
+    # Idempotent fast path: if the pool already has our node connected,
+    # nothing to do.
+    existing = wavelink.Pool.nodes.get(_NODE_IDENTIFIER)
+    if existing is not None and existing.status is wavelink.NodeStatus.CONNECTED:
+        logger.debug("Lavalink node already connected", uri=uri)
+        return
+
     logger.info("Connecting to Lavalink node", uri=uri)
-    node = wavelink.Node(uri=uri, password=password, identifier="mr-swede-main")
+    node = wavelink.Node(uri=uri, password=password, identifier=_NODE_IDENTIFIER)
     await wavelink.Pool.connect(client=client, nodes=[node])
-    logger.info("Lavalink node connected")
+
+    # Poll until CONNECTED. Bail if it doesn't happen within
+    # CONNECT_TIMEOUT_SECONDS so the cog can surface a useful error
+    # instead of hanging forever.
+    deadline = asyncio.get_event_loop().time() + _CONNECT_TIMEOUT_SECONDS
+    while asyncio.get_event_loop().time() < deadline:
+        # Re-fetch from the pool because Pool.connect may swap node
+        # objects internally during reconnection paths.
+        current = wavelink.Pool.nodes.get(_NODE_IDENTIFIER, node)
+        if current.status is wavelink.NodeStatus.CONNECTED:
+            logger.info("Lavalink node connected", uri=uri)
+            return
+        await asyncio.sleep(_CONNECT_POLL_INTERVAL_SECONDS)
+
+    logger.error("Lavalink node did not reach CONNECTED state", uri=uri)
+    raise TimeoutError(
+        f"Lavalink node {_NODE_IDENTIFIER} did not connect within {_CONNECT_TIMEOUT_SECONDS}s"
+    )
 
 
 async def play(
