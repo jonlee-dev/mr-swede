@@ -128,13 +128,12 @@ async def play(
     elif player.channel != voice_channel:
         await player.move_to(voice_channel)
 
-    # wavelink.Playable.search handles URLs and YouTube search-prefix
-    # ("ytsearch:foo bar"). If `query` doesn't look like a URL, prepend
-    # the search prefix.
-    search = (
-        query if query.startswith(("http://", "https://", "ytsearch:")) else f"ytsearch:{query}"
-    )
-    tracks: Any = await wavelink.Playable.search(search)
+    # wavelink.Playable.search defaults to `ytmsearch:` (YouTube Music)
+    # when no prefix is present. Don't prepend `ytsearch:` ourselves --
+    # wavelink would treat the whole thing as a literal search string
+    # ("ytmsearch:ytsearch:hi") and resolve to nonsense. URLs pass
+    # through unmodified.
+    tracks: Any = await wavelink.Playable.search(query)
     if not tracks:
         return (None, 0)
 
