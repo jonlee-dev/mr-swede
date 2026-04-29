@@ -37,3 +37,13 @@ output "subnet_name" {
   description = "Subnet name inside the Valheim VPC."
   value       = google_compute_subnetwork.valheim.name
 }
+
+output "vpc_self_link" {
+  description = "Full self-link of the custom VPC. Sibling VM modules (e.g. gcp-lavalink-vm) consume this so they share network plumbing rather than creating their own VPC."
+  value       = google_compute_network.valheim.self_link
+}
+
+output "subnet_self_link" {
+  description = "Full self-link of the subnet. Sibling VM modules use this when binding their own google_compute_instance to the same subnet."
+  value       = google_compute_subnetwork.valheim.self_link
+}

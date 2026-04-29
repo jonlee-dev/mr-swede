@@ -1,0 +1,87 @@
+# Lavalink v4 server configuration.
+#
+# Spring Boot resolves ${ENV_VAR} placeholders at JVM start from the
+# container's environment. SERVER_PASSWORD lands here via the
+# fetch-secrets oneshot writing /etc/lavalink/secret.env, which
+# docker-compose loads as env_file.
+#
+# YouTube via the official lavalink-devs youtube-plugin (the built-in
+# YouTube source in Lavalink v4 was deprecated when YouTube changed
+# their API; the plugin tracks upstream and is the supported path).
+
+server:
+  port: 2333
+  address: 0.0.0.0
+  http2:
+    enabled: false
+
+lavalink:
+  server:
+    password: "${LAVALINK_SERVER_PASSWORD}"
+    sources:
+      # Disable built-in YouTube source -- broken upstream; we use the
+      # community plugin instead.
+      youtube: false
+      bandcamp: true
+      soundcloud: false
+      twitch: false
+      vimeo: false
+      http: true
+      local: false
+    filters:
+      volume: true
+      equalizer: true
+      karaoke: false
+      timescale: true
+      tremolo: false
+      vibrato: false
+      distortion: false
+      rotation: false
+      channelMix: false
+      lowPass: false
+    bufferDurationMs: 400
+    frameBufferDurationMs: 5000
+    opusEncodingQuality: 10
+    resamplingQuality: LOW
+    trackStuckThresholdMs: 10000
+    useSeekGhosting: true
+    youtubePlaylistLoadLimit: 6
+    playerUpdateInterval: 5
+    youtubeSearchEnabled: true
+    soundcloudSearchEnabled: false
+    gc-warnings: true
+
+  plugins:
+    - dependency: "dev.lavalink.youtube:youtube-plugin:1.13.5"
+      repository: "https://maven.lavalink.dev/releases"
+      snapshot: false
+
+plugins:
+  youtube:
+    enabled: true
+    allowSearch: true
+    allowDirectVideoIds: true
+    allowDirectPlaylistIds: true
+    clients:
+      - MUSIC
+      - ANDROID_VR
+      - WEB
+      - WEBEMBEDDED
+
+logging:
+  file:
+    path: ./logs/
+  level:
+    root: INFO
+    lavalink: INFO
+  request:
+    enabled: true
+    includeClientInfo: true
+    includeHeaders: false
+    includeQueryString: true
+    includePayload: true
+    maxPayloadLength: 10000
+  logback:
+    rollingpolicy:
+      max-file-size: 25MB
+      max-history: 30

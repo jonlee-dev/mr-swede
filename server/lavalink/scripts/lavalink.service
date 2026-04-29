@@ -1,0 +1,21 @@
+[Unit]
+Description=Lavalink audio server (docker compose)
+Requires=docker.service network-online.target lavalink-fetch-secrets.service
+After=docker.service network-online.target lavalink-fetch-secrets.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/lavalink
+# down before up so a startup-script-rewritten compose file actually
+# takes effect. Without this, docker's `restart: unless-stopped`
+# pins the old container and compose edits don't apply until manual
+# recreate.
+ExecStartPre=-/usr/bin/docker compose down --timeout 30
+ExecStart=/usr/bin/docker compose up
+ExecStop=/usr/bin/docker compose down --timeout 30
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=60
+
+[Install]
+WantedBy=multi-user.target

@@ -22,6 +22,9 @@ locals {
   # Self-link shape: projects/<project>/zones/<zone>/instances/<name>
   vm_zone = element(split("/", var.valheim_instance_self_link), 8)
   vm_name = element(split("/", var.valheim_instance_self_link), 10)
+
+  lavalink_vm_zone = element(split("/", var.lavalink_instance_self_link), 8)
+  lavalink_vm_name = element(split("/", var.lavalink_instance_self_link), 10)
 }
 
 resource "google_project_iam_custom_role" "vm_controller" {
@@ -47,6 +50,17 @@ resource "google_compute_instance_iam_member" "bot_can_admin_valheim_vm" {
   project       = var.project_id
   zone          = local.vm_zone
   instance_name = local.vm_name
+  role          = google_project_iam_custom_role.vm_controller.name
+  member        = "serviceAccount:${google_service_account.bot.email}"
+}
+
+# Same custom role, different instance. The bot drives the Lavalink
+# VM's lifecycle the same way it drives the Valheim VM's: via the
+# /music * commands when needed.
+resource "google_compute_instance_iam_member" "bot_can_admin_lavalink_vm" {
+  project       = var.project_id
+  zone          = local.lavalink_vm_zone
+  instance_name = local.lavalink_vm_name
   role          = google_project_iam_custom_role.vm_controller.name
   member        = "serviceAccount:${google_service_account.bot.email}"
 }

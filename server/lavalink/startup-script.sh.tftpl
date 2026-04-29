@@ -1,0 +1,95 @@
+#!/usr/bin/env bash
+# Startup script for the Lavalink VM. Mirrors the Valheim VM's
+# startup-script shape: idempotent, runs every boot, drops files,
+# enables systemd units, lets the systemd ExecStartPre handle
+# container recreation on compose-yml changes.
+#
+# This file is a Terraform template -- $${...}-style placeholders are
+# interpolated by templatefile() in the gcp-lavalink-vm module.
+# Embedded files use base64 encoding to dodge yaml/heredoc edge cases
+# with the application.yml indentation.
+#
+# Boot sequence:
+#   1. Install Docker + docker-compose plugin (first boot only)
+#   2. Drop docker-compose, application.yml, fetch-secrets script,
+#      and the two systemd units in place from base64 blobs
+#   3. Reload + enable + restart systemd units. lavalink-fetch-secrets
+#      runs first as a Requires= dep of lavalink.service.
+#
+# Logs land at /var/log/lavalink-startup-script.log AND in the
+# journal under unit `google-startup-scripts.service`.
+
+set -euxo pipefail
+exec > >(tee -a /var/log/lavalink-startup-script.log) 2>&1
+
+echo "=== Lavalink startup-script begin: $(date -u +%FT%TZ) ==="
+
+# 1. Install Docker if missing. Resilient: re-runs on a fresh VM image
+#    or after a manual `apt purge docker-*`.
+if ! command -v docker >/dev/null 2>&1; then
+  echo "Docker missing; installing from Debian's official repo."
+  apt-get update
+  DEBIAN_FRONTEND=noninteractive apt-get install -y \
+    ca-certificates curl gnupg python3 jq
+
+  install -m 0755 -d /etc/apt/keyrings
+  curl -fsSL https://download.docker.com/linux/debian/gpg \
+    | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+  chmod a+r /etc/apt/keyrings/docker.gpg
+
+  echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian $(. /etc/os-release && echo $VERSION_CODENAME) stable" \
+    > /etc/apt/sources.list.d/docker.list
+
+  apt-get update
+  DEBIAN_FRONTEND=noninteractive apt-get install -y \
+    docker-ce docker-ce-cli containerd.io docker-compose-plugin
+fi
+
+systemctl enable --now docker
+
+# 2. Drop runtime artifacts. Overwrite every boot so a TF template edit
+#    propagates after the next reboot.
+mkdir -p /opt/lavalink /opt/lavalink/scripts /opt/lavalink/plugins /etc/lavalink
+
+base64 -d > /opt/lavalink/docker-compose.yml <<'__LAVALINK_BLOB_EOF__'
+${base64encode(docker_compose)}
+__LAVALINK_BLOB_EOF__
+chmod 0644 /opt/lavalink/docker-compose.yml
+
+base64 -d > /opt/lavalink/application.yml <<'__LAVALINK_BLOB_EOF__'
+${base64encode(application_yml)}
+__LAVALINK_BLOB_EOF__
+chmod 0644 /opt/lavalink/application.yml
+
+base64 -d > /opt/lavalink/scripts/fetch-secrets.sh <<'__LAVALINK_BLOB_EOF__'
+${base64encode(fetch_secrets_sh)}
+__LAVALINK_BLOB_EOF__
+chmod 0750 /opt/lavalink/scripts/fetch-secrets.sh
+
+base64 -d > /etc/systemd/system/lavalink.service <<'__LAVALINK_BLOB_EOF__'
+${base64encode(lavalink_service)}
+__LAVALINK_BLOB_EOF__
+chmod 0644 /etc/systemd/system/lavalink.service
+
+base64 -d > /etc/systemd/system/lavalink-fetch-secrets.service <<'__LAVALINK_BLOB_EOF__'
+${base64encode(lavalink_fetch_secrets_service)}
+__LAVALINK_BLOB_EOF__
+chmod 0644 /etc/systemd/system/lavalink-fetch-secrets.service
+
+# Static (non-secret) env layered first.
+cat > /etc/lavalink/server.env <<'__LAVALINK_BLOB_EOF__'
+SERVER_PORT=2333
+__LAVALINK_BLOB_EOF__
+
+# 3. Reload + enable + RESTART systemd units. Restart (not just `enable
+#    --now`) is intentional: systemd may have already started these
+#    units in parallel with google-startup-scripts on boot, before we
+#    wrote the new unit-file contents to disk. In that case `enable
+#    --now` is a no-op and the OLD unit definition stays running.
+#    Restart forces systemd to re-read the freshly-written unit files.
+systemctl daemon-reload
+systemctl enable lavalink-fetch-secrets.service lavalink.service
+systemctl restart lavalink-fetch-secrets.service
+systemctl restart lavalink.service
+
+echo "=== Lavalink startup-script complete: $(date -u +%FT%TZ) ==="

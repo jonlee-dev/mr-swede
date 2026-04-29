@@ -1,0 +1,43 @@
+# Static docker-compose for the Lavalink audio server.
+#
+# Two env files are layered:
+#   /etc/lavalink/server.env  -- non-secret (port, plugin paths)
+#   /etc/lavalink/secret.env  -- SERVER_PASSWORD, fetched at boot from
+#                                Secret Manager by lavalink-fetch-secrets
+#                                (0600 root:root, never committed)
+#
+# application.yml is mounted from /opt/lavalink/application.yml; Spring
+# Boot in Lavalink resolves ${SERVER_PASSWORD} from the env at JVM
+# start, so the password never lands on disk inside the container.
+#
+# Plugins are downloaded on first boot to /opt/lavalink/plugins (host
+# mount). Subsequent VM starts reuse the cached jars unless the
+# requested plugin version changes.
+
+services:
+  lavalink:
+    image: ghcr.io/lavalink-devs/lavalink:4
+    container_name: lavalink
+    restart: unless-stopped
+    stop_grace_period: 30s
+    ports:
+      - "2333:2333/tcp"
+    env_file:
+      - /etc/lavalink/server.env
+      - /etc/lavalink/secret.env
+    environment:
+      _JAVA_OPTIONS: "-Xmx1G"
+      SERVER_PORT: "2333"
+      LAVALINK_SERVER_PASSWORD: "${LAVALINK_SERVER_PASSWORD:-changeme}"
+    volumes:
+      - /opt/lavalink/application.yml:/opt/Lavalink/application.yml:ro
+      - /opt/lavalink/plugins:/opt/Lavalink/plugins
+    healthcheck:
+      # Lavalink v4 always answers 401 on /version without auth -- a 401
+      # response means the JVM is up and serving HTTP. We don't bother
+      # with the auth header here; just want "is the process alive?"
+      test: ["CMD-SHELL", "curl -s -o /dev/null -w '%{http_code}' http://localhost:2333/version | grep -E '^(200|401)$$'"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s

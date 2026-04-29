@@ -29,8 +29,9 @@ data "google_project" "current" {
 locals {
   bootstrap_image = "us-docker.pkg.dev/cloudrun/container/hello"
 
-  discord_secret_path          = "projects/${data.google_project.current.number}/secrets/${google_secret_manager_secret.discord_bot_secrets.secret_id}/versions/latest"
-  valheim_password_secret_path = "projects/${data.google_project.current.number}/secrets/${var.valheim_password_secret_id}/versions/latest"
+  discord_secret_path           = "projects/${data.google_project.current.number}/secrets/${google_secret_manager_secret.discord_bot_secrets.secret_id}/versions/latest"
+  valheim_password_secret_path  = "projects/${data.google_project.current.number}/secrets/${var.valheim_password_secret_id}/versions/latest"
+  lavalink_password_secret_path = "projects/${data.google_project.current.number}/secrets/${var.lavalink_password_secret_id}/versions/latest"
 }
 
 resource "google_cloud_run_v2_service" "bot" {
@@ -133,6 +134,31 @@ resource "google_cloud_run_v2_service" "bot" {
         name  = "VALHEIM_PASSWORD_SECRET_PATH"
         value = local.valheim_password_secret_path
       }
+
+      env {
+        name  = "LAVALINK_INSTANCE_NAME"
+        value = local.lavalink_vm_name
+      }
+
+      env {
+        name  = "LAVALINK_ZONE"
+        value = local.lavalink_vm_zone
+      }
+
+      env {
+        name  = "LAVALINK_HOST"
+        value = "" # resolved at runtime via compute.describe_instance
+      }
+
+      env {
+        name  = "LAVALINK_PORT"
+        value = tostring(var.lavalink_port)
+      }
+
+      env {
+        name  = "LAVALINK_PASSWORD_SECRET_PATH"
+        value = local.lavalink_password_secret_path
+      }
     }
   }
 
@@ -163,7 +189,9 @@ resource "google_cloud_run_v2_service" "bot" {
   depends_on = [
     google_secret_manager_secret_iam_member.bot_can_read_discord_secrets,
     google_secret_manager_secret_iam_member.bot_can_read_valheim_password,
+    google_secret_manager_secret_iam_member.bot_can_read_lavalink_password,
     google_compute_instance_iam_member.bot_can_admin_valheim_vm,
+    google_compute_instance_iam_member.bot_can_admin_lavalink_vm,
   ]
 }
 

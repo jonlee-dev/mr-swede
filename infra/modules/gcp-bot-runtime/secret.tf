@@ -58,3 +58,13 @@ resource "google_secret_manager_secret_iam_member" "bot_can_read_valheim_passwor
   role      = "roles/secretmanager.secretAccessor"
   member    = "serviceAccount:${google_service_account.bot.email}"
 }
+
+# Same pattern for the Lavalink password. The bot uses it as the
+# bearer header on every REST/WS call to Lavalink; without read
+# access here, /music play would 401 forever.
+resource "google_secret_manager_secret_iam_member" "bot_can_read_lavalink_password" {
+  project   = var.project_id
+  secret_id = var.lavalink_password_secret_id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.bot.email}"
+}

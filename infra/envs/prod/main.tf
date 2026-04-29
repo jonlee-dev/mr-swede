@@ -29,21 +29,38 @@ module "valheim_vm" {
   depends_on = [module.bootstrap]
 }
 
+module "lavalink_vm" {
+  source = "../../modules/gcp-lavalink-vm"
+
+  project_id       = var.project_id
+  region           = var.region
+  zone             = var.zone
+  vpc_self_link    = module.valheim_vm.vpc_self_link
+  subnet_self_link = module.valheim_vm.subnet_self_link
+
+  # bootstrap enables the compute + secretmanager APIs; valheim_vm
+  # creates the VPC we share. Both must exist before this module
+  # tries to instantiate.
+  depends_on = [module.bootstrap, module.valheim_vm]
+}
+
 module "bot_runtime" {
   source = "../../modules/gcp-bot-runtime"
 
-  project_id                 = var.project_id
-  region                     = var.region
-  valheim_instance_self_link = module.valheim_vm.instance_self_link
-  valheim_password_secret_id = module.valheim_vm.server_password_secret_id
-  github_owner               = var.github_owner
-  github_repo                = var.github_repo
-  discord_guild_id           = var.discord_guild_id
+  project_id                  = var.project_id
+  region                      = var.region
+  valheim_instance_self_link  = module.valheim_vm.instance_self_link
+  valheim_password_secret_id  = module.valheim_vm.server_password_secret_id
+  lavalink_instance_self_link = module.lavalink_vm.instance_self_link
+  lavalink_password_secret_id = module.lavalink_vm.server_password_secret_id
+  lavalink_port               = module.lavalink_vm.lavalink_port
+  github_owner                = var.github_owner
+  github_repo                 = var.github_repo
+  discord_guild_id            = var.discord_guild_id
 
-  # Same dependency reasoning as valheim_vm: bootstrap enables the run,
-  # cloudbuild, and artifactregistry APIs that this module immediately
-  # consumes.
-  depends_on = [module.bootstrap]
+  # Bot needs both VMs to exist (so the instance-scoped IAM bindings
+  # have targets) and bootstrap APIs.
+  depends_on = [module.bootstrap, module.valheim_vm, module.lavalink_vm]
 }
 
 module "idle_watcher" {
@@ -101,6 +118,35 @@ output "valheim_password_secret_id" {
 output "valheim_vm_service_account_email" {
   value       = module.valheim_vm.vm_service_account_email
   description = "Runtime identity of the Valheim VM. Grant additional access here, never project-wide."
+}
+
+###############################################################################
+# Surface Lavalink VM outputs (instance, secret, port).
+###############################################################################
+
+output "lavalink_instance_name" {
+  value       = module.lavalink_vm.instance_name
+  description = "Lavalink GCE instance name. The bot calls instances.start / instances.stop with this."
+}
+
+output "lavalink_instance_zone" {
+  value       = module.lavalink_vm.instance_zone
+  description = "Zone for the Lavalink VM."
+}
+
+output "lavalink_password_secret_id" {
+  value       = module.lavalink_vm.server_password_secret_id
+  description = "Secret Manager secret ID. Seed once via `gcloud secrets versions add`."
+}
+
+output "lavalink_port" {
+  value       = module.lavalink_vm.lavalink_port
+  description = "TCP port Lavalink binds. Bot connects to <public_ip>:<port> after starting the VM."
+}
+
+output "lavalink_vm_service_account_email" {
+  value       = module.lavalink_vm.vm_service_account_email
+  description = "Runtime identity of the Lavalink VM."
 }
 
 ###############################################################################

@@ -25,6 +25,22 @@ variable "valheim_status_http_port" {
   default     = 9001
 }
 
+variable "lavalink_instance_self_link" {
+  description = "Full self_link of the Lavalink VM (from module.lavalink_vm.instance_self_link). Used to grant the bot SA instance-scoped vm-controller role -- same role / different instance from the Valheim binding."
+  type        = string
+}
+
+variable "lavalink_password_secret_id" {
+  description = "Secret Manager secret_id for the Lavalink server password (from module.lavalink_vm.server_password_secret_id). The bot reads it to authenticate to Lavalink's REST/WS API."
+  type        = string
+}
+
+variable "lavalink_port" {
+  description = "TCP port the Lavalink server binds (from module.lavalink_vm.lavalink_port). Wired into the Cloud Run service env var for the bot's WebSocket URL."
+  type        = number
+  default     = 2333
+}
+
 variable "github_owner" {
   description = "GitHub account or org that owns the bot's source repo (used by the Cloud Build trigger)."
   type        = string
