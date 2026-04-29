@@ -16,7 +16,11 @@
 
 services:
   lavalink:
-    image: ghcr.io/lavalink-devs/lavalink:4
+    # Pinned to a specific minor. The floating `:4` and `:latest` tags
+    # have shipped a 16MB truncated Lavalink.jar at times; tagged
+    # minors (4.0.8, 4.1.0) are the stable 76-88MB jars. Bump the pin
+    # deliberately when upgrading.
+    image: ghcr.io/lavalink-devs/lavalink:4.1.0
     container_name: lavalink
     restart: unless-stopped
     stop_grace_period: 30s
@@ -28,7 +32,11 @@ services:
     environment:
       _JAVA_OPTIONS: "-Xmx1G"
       SERVER_PORT: "2333"
-      LAVALINK_SERVER_PASSWORD: "${LAVALINK_SERVER_PASSWORD:-changeme}"
+      # LAVALINK_SERVER_PASSWORD comes from env_file (/etc/lavalink/secret.env)
+      # at runtime. Don't put it here -- docker-compose resolves
+      # `${VAR:-default}` at compose parse time using the SHELL's env, not
+      # the container's, so a fallback would override env_file with the
+      # literal default and ship a wide-open Lavalink.
     volumes:
       - /opt/lavalink/application.yml:/opt/Lavalink/application.yml:ro
       - /opt/lavalink/plugins:/opt/Lavalink/plugins
