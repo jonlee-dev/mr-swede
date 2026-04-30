@@ -34,7 +34,7 @@ exec > >(tee -a /var/log/lavalink-startup-script.log) 2>&1
 
 echo "=== Lavalink startup-script begin: $(date -u +%FT%TZ) ==="
 
-LAVALINK_VERSION="4.0.8"
+LAVALINK_VERSION="4.2.2"
 LAVALINK_JAR_URL="https://github.com/lavalink-devs/Lavalink/releases/download/$${LAVALINK_VERSION}/Lavalink.jar"
 
 # 1. Install JDK + curl. Skip if java already on PATH (subsequent boots).
