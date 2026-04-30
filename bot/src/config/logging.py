@@ -62,15 +62,9 @@ def setup_logging() -> None:
     logging.getLogger("discord.http").setLevel(logging.WARNING)
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
-
-    # Temporarily verbose for chasing the silent-audio bug:
-    # wavelink + discord.gateway/voice events should surface what's
-    # happening on the voice handshake side. Roll these back to their
-    # defaults / WARNING once root cause is identified.
-    logging.getLogger("wavelink").setLevel(logging.DEBUG)
-    logging.getLogger("discord.gateway").setLevel(logging.INFO)
-    logging.getLogger("discord.voice_client").setLevel(logging.DEBUG)
-    logging.getLogger("discord.voice_state").setLevel(logging.DEBUG)
+    # Wavelink at INFO surfaces track-start / node-ready / queue events,
+    # which are useful for ops without flooding the log.
+    logging.getLogger("wavelink").setLevel(logging.INFO)
 
 
 def get_logger(name: str | None = None, **initial_context: Any) -> structlog.stdlib.BoundLogger:

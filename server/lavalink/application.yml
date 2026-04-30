@@ -72,15 +72,8 @@ logging:
   file:
     path: ./logs/
   level:
-    # Temporarily everything-DEBUG to chase Koe/voice connection logs
-    # that don't appear under just the lavaplayer + Lavalink loggers.
-    # Roll back to root: INFO once root cause is identified.
-    root: DEBUG
-    lavalink: DEBUG
-    dev.lavalink: DEBUG
-    com.sedmelluq: DEBUG
-    moe.kyokobot.koe: TRACE
-    dev.arbjerg.koe: TRACE
+    root: INFO
+    lavalink: INFO
   request:
     enabled: true
     includeClientInfo: true
