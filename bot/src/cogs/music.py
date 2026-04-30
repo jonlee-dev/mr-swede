@@ -35,6 +35,55 @@ def _track_embed(track: music.TrackInfo, header: str, color: int = 0x1ABC9C) -> 
     return embed
 
 
+def _playlist_embed(result: music.PlayResult, color: int = 0x1ABC9C) -> discord.Embed:
+    """Summary embed for a playlist/album URL resolution.
+
+    Surfaces:
+      - total tracks queued (= 1 first_track + extra_tracks_queued)
+      - playlist title (or "playlist" fallback when lavasrc surfaces no name)
+      - truncation warning when the source playlist exceeded
+        PLAYLIST_TRACK_CAP
+      - unresolved count when some tracks couldn't be matched
+      - first-up track inline so the user sees what's playing now
+    """
+    assert result.first_track is not None  # caller checks
+    total_queued = 1 + result.extra_tracks_queued
+    title = result.playlist_title or "playlist"
+    embed = discord.Embed(
+        title=f"Queued {total_queued} tracks",
+        description=f'From **"{title}"**',
+        color=color,
+    )
+
+    embed.add_field(
+        name="First up",
+        value=f"**{result.first_track.title}** ({music.format_duration(result.first_track.duration_ms)})",
+        inline=False,
+    )
+
+    if result.truncated_from is not None:
+        embed.add_field(
+            name="Truncated",
+            value=(
+                f"Playlist had {result.truncated_from} tracks; "
+                f"queued the first {total_queued} (cap = {music.PLAYLIST_TRACK_CAP})."
+            ),
+            inline=False,
+        )
+
+    if result.unresolved_count > 0:
+        embed.add_field(
+            name="Unresolved",
+            value=f"{result.unresolved_count} track(s) couldn't be resolved and were skipped.",
+            inline=False,
+        )
+
+    if result.first_track.requester_id is not None:
+        embed.set_footer(text=f"Requested by user {result.first_track.requester_id}")
+
+    return embed
+
+
 class MusicCog(commands.GroupCog, name="music"):
     """The /music command group."""
 
@@ -113,20 +162,28 @@ class MusicCog(commands.GroupCog, name="music"):
             return
 
         try:
-            track, queue_pos = await music.play(
-                member.voice.channel, query, requester_id=interaction.user.id
-            )
+            result = await music.play(member.voice.channel, query, requester_id=interaction.user.id)
         except Exception as e:
             logger.error("play failed", query=query, error=str(e))
             await interaction.followup.send(f"Couldn't play that: `{e}`", ephemeral=True)
             return
 
-        if track is None:
+        if result.first_track is None:
             await interaction.followup.send(f"No results for `{query}`.", ephemeral=True)
             return
 
-        header = "Now playing" if queue_pos == 0 else f"Queued (#{queue_pos})"
-        await interaction.followup.send(embed=_track_embed(track, header))
+        # Branch on result shape: playlist URLs render the summary embed,
+        # search/single-track results render the existing per-track embed.
+        if result.playlist_title is not None:
+            await interaction.followup.send(embed=_playlist_embed(result))
+            return
+
+        header = (
+            "Now playing"
+            if result.first_track_queue_position == 0
+            else f"Queued (#{result.first_track_queue_position})"
+        )
+        await interaction.followup.send(embed=_track_embed(result.first_track, header))
 
     @app_commands.command(name="skip", description="Skip the currently playing track")
     @requires_channel("music_command_channel_id")

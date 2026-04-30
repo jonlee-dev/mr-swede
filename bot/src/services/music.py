@@ -42,6 +42,54 @@ class TrackInfo:
     requester_id: int | None  # Discord user ID of who queued it
 
 
+# Hard cap on how many tracks a single playlist URL can enqueue. Set to
+# 100 to comfortably cover normal Spotify/YouTube playlists while
+# preventing a runaway 5000-track YouTube auto-mix from filling the
+# queue. If a playlist exceeds this, we keep the first PLAYLIST_TRACK_CAP
+# tracks and surface "truncated to N/M" in the embed.
+PLAYLIST_TRACK_CAP = 100
+
+
+@dataclass(frozen=True)
+class PlayResult:
+    """The shape returned by `play()` for either single tracks or
+    playlist/album URL resolutions.
+
+    Discriminated by `playlist_title`: None means a single-track
+    resolution (or a search query), non-None means the input URL
+    resolved to a multi-track playlist or album.
+
+    The cog uses this to pick between the single-track embed and the
+    playlist-summary embed without itself knowing whether the resolver
+    returned a `wavelink.Playlist` or a `Playable`.
+    """
+
+    # First track to play / first track that landed in the queue.
+    # None only when the query resolved to zero tracks (no results).
+    first_track: TrackInfo | None
+
+    # 0 when first_track is now playing (queue was empty); otherwise
+    # the 1-based position of first_track in the queue.
+    first_track_queue_position: int
+
+    # Playlist metadata. None for single-track / search-query results.
+    playlist_title: str | None
+
+    # Number of tracks added BEYOND first_track. 0 for single tracks.
+    # Capped at PLAYLIST_TRACK_CAP - 1 (since first_track is the +1).
+    extra_tracks_queued: int
+
+    # When the playlist URL resolved to MORE tracks than we accepted.
+    # Allows the cog to surface "truncated to 100/523".
+    truncated_from: int | None
+
+    # When some tracks in the playlist failed to resolve (lavasrc
+    # couldn't find a YouTube match, region locked, deleted, etc.).
+    # `extra_tracks_queued` already excludes these; `unresolved_count`
+    # is purely for the "N tracks couldn't be resolved" surface.
+    unresolved_count: int
+
+
 def _to_track_info(track: wavelink.Playable, requester_id: int | None = None) -> TrackInfo:
     return TrackInfo(
         title=track.title,
@@ -178,14 +226,23 @@ async def play(
     voice_channel: discord.VoiceChannel | discord.StageChannel,
     query: str,
     requester_id: int | None = None,
-) -> tuple[TrackInfo | None, int]:
-    """Resolve `query`, enqueue it on the guild's player, and start
-    playback if nothing is playing. Returns (now_playing_or_queued,
-    queue_position). Position is 0 when the track starts playing
-    immediately, otherwise its 1-based position in the queue.
+) -> PlayResult:
+    """Resolve `query` (search string OR URL), enqueue the result, start
+    playback if nothing is playing.
+
+    Three resolution modes:
+
+      1. Search query -> single Playable -> single-track result
+      2. Track URL    -> single Playable -> single-track result
+      3. Playlist/album URL -> wavelink.Playlist -> multi-track result
+
+    Mode 3 is the v4.2 work: we iterate the playlist, enqueue every
+    track up to PLAYLIST_TRACK_CAP, and surface the truncation /
+    unresolved counts in the returned PlayResult so the cog can render
+    a useful summary embed.
 
     Joins `voice_channel` if the player isn't already connected.
-    Raises if the query resolves to nothing.
+    Returns PlayResult with first_track=None when nothing resolved.
     """
     guild = voice_channel.guild
     player: wavelink.Player | None = guild.voice_client  # type: ignore[assignment]
@@ -205,20 +262,113 @@ async def play(
     # wavelink.Playable.search defaults to `ytmsearch:` (YouTube Music)
     # when no prefix is present. Don't prepend `ytsearch:` ourselves --
     # wavelink would treat the whole thing as a literal search string
-    # ("ytmsearch:ytsearch:hi") and resolve to nonsense. URLs pass
-    # through unmodified.
+    # ("ytmsearch:ytsearch:hi") and resolve to nonsense. URLs (incl.
+    # Spotify URLs once lavasrc is loaded server-side) pass through
+    # unmodified.
     tracks: Any = await wavelink.Playable.search(query)
     if not tracks:
-        return (None, 0)
+        return PlayResult(
+            first_track=None,
+            first_track_queue_position=0,
+            playlist_title=None,
+            extra_tracks_queued=0,
+            truncated_from=None,
+            unresolved_count=0,
+        )
 
-    track = tracks[0] if not isinstance(tracks, wavelink.Playlist) else tracks.tracks[0]
+    if isinstance(tracks, wavelink.Playlist):
+        return await _enqueue_playlist(player, tracks, requester_id)
 
+    return await _enqueue_single(player, tracks[0], requester_id)
+
+
+async def _enqueue_single(
+    player: wavelink.Player,
+    track: wavelink.Playable,
+    requester_id: int | None,
+) -> PlayResult:
+    """Enqueue (or play directly if idle) a single resolved track."""
     if not player.playing and player.queue.is_empty:
         await player.play(track)
-        return (_to_track_info(track, requester_id), 0)
+        return PlayResult(
+            first_track=_to_track_info(track, requester_id),
+            first_track_queue_position=0,
+            playlist_title=None,
+            extra_tracks_queued=0,
+            truncated_from=None,
+            unresolved_count=0,
+        )
 
     player.queue.put(track)
-    return (_to_track_info(track, requester_id), len(player.queue))
+    return PlayResult(
+        first_track=_to_track_info(track, requester_id),
+        first_track_queue_position=len(player.queue),
+        playlist_title=None,
+        extra_tracks_queued=0,
+        truncated_from=None,
+        unresolved_count=0,
+    )
+
+
+async def _enqueue_playlist(
+    player: wavelink.Player,
+    playlist: wavelink.Playlist,
+    requester_id: int | None,
+) -> PlayResult:
+    """Enqueue every track from a resolved playlist/album, applying the
+    PLAYLIST_TRACK_CAP and skipping any nulls lavasrc may surface for
+    unresolvable tracks (region-locked, deleted, no YouTube match).
+
+    Lavasrc populates the playlist with `Playable` entries it has
+    already matched to a real YouTube source. Tracks it CAN'T match
+    are dropped from `playlist.tracks` upstream, BUT the playlist's
+    advertised total may exceed `len(playlist.tracks)`. We don't have
+    a clean signal for that delta from wavelink today, so
+    `unresolved_count` is computed conservatively as 0 for now and
+    revisited if we ever hit a metadata source that exposes per-track
+    resolution status.
+    """
+    raw_tracks: list[wavelink.Playable] = list(playlist.tracks)
+    total_in_playlist = len(raw_tracks)
+
+    truncated_from: int | None = None
+    if total_in_playlist > PLAYLIST_TRACK_CAP:
+        truncated_from = total_in_playlist
+        raw_tracks = raw_tracks[:PLAYLIST_TRACK_CAP]
+
+    if not raw_tracks:
+        return PlayResult(
+            first_track=None,
+            first_track_queue_position=0,
+            playlist_title=getattr(playlist, "name", None) or "playlist",
+            extra_tracks_queued=0,
+            truncated_from=truncated_from,
+            unresolved_count=0,
+        )
+
+    first = raw_tracks[0]
+    rest = raw_tracks[1:]
+
+    # First track: play directly if idle, else enqueue at the tail.
+    if not player.playing and player.queue.is_empty:
+        await player.play(first)
+        first_position = 0
+    else:
+        player.queue.put(first)
+        first_position = len(player.queue)
+
+    # Append the rest in order.
+    for t in rest:
+        player.queue.put(t)
+
+    return PlayResult(
+        first_track=_to_track_info(first, requester_id),
+        first_track_queue_position=first_position,
+        playlist_title=getattr(playlist, "name", None) or "playlist",
+        extra_tracks_queued=len(rest),
+        truncated_from=truncated_from,
+        unresolved_count=0,
+    )
 
 
 async def skip(guild: discord.Guild) -> bool:
@@ -329,6 +479,8 @@ NodeReadyEventPayload = wavelink.NodeReadyEventPayload
 
 
 __all__ = [
+    "PLAYLIST_TRACK_CAP",
+    "PlayResult",
     "TrackInfo",
     "TrackEndEventPayload",
     "NodeReadyEventPayload",
