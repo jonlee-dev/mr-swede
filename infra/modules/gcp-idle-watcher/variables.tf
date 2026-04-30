@@ -14,6 +14,22 @@ variable "valheim_instance_self_link" {
   type        = string
 }
 
+variable "lavalink_instance_self_link" {
+  description = "Full self_link of the Lavalink VM (from module.lavalink_vm.instance_self_link). Watcher polls /v4/players on this instance and stops it when idle."
+  type        = string
+}
+
+variable "lavalink_port" {
+  description = "TCP port Lavalink binds (from module.lavalink_vm.lavalink_port). Used to construct the /v4/players URL."
+  type        = number
+  default     = 2333
+}
+
+variable "lavalink_password_secret_id" {
+  description = "Secret Manager secret_id holding the Lavalink server password. The watcher reads this at cold-start to authenticate /v4/players requests."
+  type        = string
+}
+
 variable "vm_controller_role_id" {
   description = "Resource name of the custom role granting compute.instances.{get,start,stop} + zoneOperations.get (from module.bot_runtime.vm_controller_role_id). The watcher SA binds to the same role as the bot SA."
   type        = string
@@ -44,9 +60,9 @@ variable "status_http_timeout_seconds" {
 }
 
 variable "function_memory" {
-  description = "Cloud Function memory limit. The function does light work; 256M is plenty."
+  description = "Cloud Function memory limit. The function itself does light work, but Cloud Functions 2nd-gen reserves ~80MB for the runtime and the google-cloud-* client libraries push us over 256MB at peak. 512M leaves headroom and is still firmly inside the free tier."
   type        = string
-  default     = "256M"
+  default     = "512M"
 }
 
 variable "function_timeout_seconds" {

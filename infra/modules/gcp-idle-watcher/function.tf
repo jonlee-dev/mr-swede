@@ -21,6 +21,17 @@
 # isn't the intent.
 ###############################################################################
 
+# Project number is required to construct the fully-qualified secret
+# resource path the function passes to Secret Manager. Mirrors the
+# pattern used in modules/gcp-bot-runtime/service.tf.
+data "google_project" "current" {
+  project_id = var.project_id
+}
+
+locals {
+  lavalink_password_secret_path = "projects/${data.google_project.current.number}/secrets/${var.lavalink_password_secret_id}/versions/latest"
+}
+
 data "archive_file" "function_source" {
   type        = "zip"
   source_dir  = "${path.module}/function"
@@ -57,10 +68,15 @@ resource "google_storage_bucket_object" "function_source" {
 }
 
 resource "google_cloudfunctions2_function" "watcher" {
-  project     = var.project_id
+  project = var.project_id
+  # Name kept as `valheim-idle-watcher` for backwards compatibility:
+  # renaming would force-replace the function (and the Cloud Run
+  # service URL underneath), which churns the scheduler binding for
+  # no operational benefit. The function is multi-target now;
+  # description carries that nuance instead.
   name        = "valheim-idle-watcher"
   location    = var.region
-  description = "Polls the Valheim VM's status HTTP endpoint; stops the VM after ${var.empty_checks_to_stop} consecutive empty checks."
+  description = "Polls the Valheim and Lavalink VMs; stops each after ${var.empty_checks_to_stop} consecutive empty checks."
 
   build_config {
     runtime     = "python312"
@@ -82,13 +98,25 @@ resource "google_cloudfunctions2_function" "watcher" {
     ingress_settings      = "ALLOW_INTERNAL_AND_GCLB"
 
     environment_variables = {
-      GCP_PROJECT                         = var.project_id
-      VALHEIM_ZONE                        = local.vm_zone
-      VALHEIM_INSTANCE_NAME               = local.vm_name
-      VALHEIM_STATUS_HTTP_PORT            = var.valheim_status_http_port
-      VALHEIM_STATUS_HTTP_TIMEOUT_SECONDS = var.status_http_timeout_seconds
-      IDLE_WATCHER_STATE_BUCKET           = google_storage_bucket.state.name
-      IDLE_WATCHER_EMPTY_CHECKS_TO_STOP   = var.empty_checks_to_stop
+      GCP_PROJECT = var.project_id
+
+      # Valheim target.
+      VALHEIM_ZONE             = local.vm_zone
+      VALHEIM_INSTANCE_NAME    = local.vm_name
+      VALHEIM_STATUS_HTTP_PORT = var.valheim_status_http_port
+
+      # Lavalink target. The function authenticates to /v4/players
+      # using the same password the bot uses; reads from GSM at
+      # cold-start.
+      LAVALINK_ZONE                 = local.lavalink_vm_zone
+      LAVALINK_INSTANCE_NAME        = local.lavalink_vm_name
+      LAVALINK_PORT                 = var.lavalink_port
+      LAVALINK_PASSWORD_SECRET_PATH = local.lavalink_password_secret_path
+
+      # Shared.
+      IDLE_WATCHER_STATE_BUCKET          = google_storage_bucket.state.name
+      IDLE_WATCHER_EMPTY_CHECKS_TO_STOP  = var.empty_checks_to_stop
+      IDLE_WATCHER_PROBE_TIMEOUT_SECONDS = var.status_http_timeout_seconds
     }
   }
 
@@ -96,6 +124,8 @@ resource "google_cloudfunctions2_function" "watcher" {
 
   depends_on = [
     google_compute_instance_iam_member.watcher_can_admin_valheim_vm,
+    google_compute_instance_iam_member.watcher_can_admin_lavalink_vm,
+    google_secret_manager_secret_iam_member.watcher_can_read_lavalink_password,
     google_storage_bucket_iam_member.watcher_can_rw_state,
   ]
 }

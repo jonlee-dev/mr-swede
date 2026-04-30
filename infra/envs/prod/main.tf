@@ -67,14 +67,18 @@ module "bot_runtime" {
 module "idle_watcher" {
   source = "../../modules/gcp-idle-watcher"
 
-  project_id                 = var.project_id
-  region                     = var.region
-  valheim_instance_self_link = module.valheim_vm.instance_self_link
-  vm_controller_role_id      = module.bot_runtime.vm_controller_role_id
+  project_id                  = var.project_id
+  region                      = var.region
+  valheim_instance_self_link  = module.valheim_vm.instance_self_link
+  lavalink_instance_self_link = module.lavalink_vm.instance_self_link
+  lavalink_port               = module.lavalink_vm.lavalink_port
+  lavalink_password_secret_id = module.lavalink_vm.server_password_secret_id
+  vm_controller_role_id       = module.bot_runtime.vm_controller_role_id
 
   # bootstrap enables cloudfunctions/cloudscheduler/eventarc/pubsub APIs
-  # that this module consumes; bot_runtime owns the custom role we bind to.
-  depends_on = [module.bootstrap, module.bot_runtime]
+  # that this module consumes; bot_runtime owns the custom role we bind
+  # to; lavalink_vm provides the second target.
+  depends_on = [module.bootstrap, module.lavalink_vm, module.bot_runtime]
 }
 
 ###############################################################################
