@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import discord
+import httpx
 import wavelink
 
 from src.config.logging import get_logger
@@ -54,12 +55,62 @@ def _to_track_info(track: wavelink.Playable, requester_id: int | None = None) ->
 _NODE_IDENTIFIER = "mr-swede-main"
 _CONNECT_TIMEOUT_SECONDS = 30.0
 _CONNECT_POLL_INTERVAL_SECONDS = 0.5
+_HEALTH_CHECK_TIMEOUT_SECONDS = 3.0
+
+
+async def _node_is_live(uri: str, password: str) -> bool:
+    """Hit Lavalink's `/v4/info` to verify the node is actually reachable.
+
+    Wavelink's `NodeStatus.CONNECTED` only reflects the WebSocket
+    handshake state; it doesn't catch the case where the underlying
+    Lavalink VM was stopped + started behind us (idle-watcher cycle,
+    new public IP, fresh session_id) but our cached Node still claims
+    to be CONNECTED. The bot would then pass this stale node to
+    `Playable.search()` and get a 404 "Session not found".
+
+    A 200 OK from `/v4/info` confirms HTTP reachability AND password
+    validity; that's a strong-enough signal that the node is usable.
+    Any error response (404/timeout/connect-refused) means we should
+    treat the cached node as stale and reconnect from scratch.
+    """
+    info_url = f"{uri.rstrip('/')}/v4/info"
+    headers = {"Authorization": password}
+    try:
+        async with httpx.AsyncClient(timeout=_HEALTH_CHECK_TIMEOUT_SECONDS) as client_http:
+            resp = await client_http.get(info_url, headers=headers)
+    except (httpx.HTTPError, OSError) as exc:
+        logger.warning("Lavalink /v4/info probe failed", uri=info_url, error=repr(exc))
+        return False
+    if resp.status_code != 200:
+        logger.warning(
+            "Lavalink /v4/info returned non-200, treating node as stale",
+            uri=info_url,
+            status=resp.status_code,
+        )
+        return False
+    return True
+
+
+async def _drop_stale_node(node: wavelink.Node) -> None:
+    """Close + evict a node so the next connect_node call gets a clean slate.
+
+    Wavelink doesn't expose a public "remove node" API; the safe
+    sequence is `node.close()` (which sets status to DISCONNECTED and
+    closes the WS) followed by popping it from `Pool.nodes`. After
+    this, `Pool.connect(...)` accepts a fresh Node with the same
+    identifier without raising 'NodeAlreadyExists'.
+    """
+    try:
+        await node.close()
+    except Exception as exc:  # noqa: BLE001 -- best-effort cleanup; we don't care why close failed
+        logger.warning("node.close() raised during stale-node eviction", error=repr(exc))
+    wavelink.Pool.nodes.pop(_NODE_IDENTIFIER, None)
 
 
 async def connect_node(client: discord.Client, host: str, port: int, password: str) -> None:
     """Open the WebSocket to Lavalink and wait until the node is CONNECTED.
 
-    Two non-obvious behaviors of wavelink 3.x covered here:
+    Behaviors of wavelink 3.x covered here:
 
       1. `Pool.connect()` requires a `client=` kwarg. Without it, the
          pool can't subscribe to discord.py's voice gateway events
@@ -73,17 +124,32 @@ async def connect_node(client: discord.Client, host: str, port: int, password: s
          here until ready (or timeout).
 
       3. Idempotent: if a node with the same identifier is already
-         in the pool and CONNECTED, we return immediately without
-         re-creating it.
+         in the pool and CONNECTED *and* a /v4/info probe succeeds,
+         we return immediately without re-creating it.
+
+      4. Stale-session detection: if the cached node is CONNECTED but
+         the URI changed (new IP after VM stop+start) or /v4/info
+         fails (Lavalink restarted, session_id no longer valid), we
+         drop the cached node and reconnect from scratch. Without
+         this, an idle-watcher-induced VM cycle would require a
+         manual bot bounce.
     """
     uri = f"http://{host}:{port}"
 
-    # Idempotent fast path: if the pool already has our node connected,
-    # nothing to do.
     existing = wavelink.Pool.nodes.get(_NODE_IDENTIFIER)
     if existing is not None and existing.status is wavelink.NodeStatus.CONNECTED:
-        logger.debug("Lavalink node already connected", uri=uri)
-        return
+        existing_uri = getattr(existing, "uri", None)
+        if existing_uri == uri and await _node_is_live(uri, password):
+            logger.debug("Lavalink node already connected and healthy", uri=uri)
+            return
+        # Cached node is stale (URI moved or /v4/info failed). Evict
+        # so Pool.connect below doesn't trip on the duplicate identifier.
+        logger.info(
+            "Cached Lavalink node is stale; reconnecting",
+            cached_uri=existing_uri,
+            new_uri=uri,
+        )
+        await _drop_stale_node(existing)
 
     logger.info("Connecting to Lavalink node", uri=uri)
     node = wavelink.Node(uri=uri, password=password, identifier=_NODE_IDENTIFIER)
@@ -127,6 +193,14 @@ async def play(
         player = await voice_channel.connect(cls=wavelink.Player)
     elif player.channel != voice_channel:
         await player.move_to(voice_channel)
+
+    # Wavelink 3.x defaults Player.autoplay to AutoPlayMode.disabled,
+    # which means a track ending does NOT trigger the next queue item.
+    # We want "partial" -- advance the queue automatically, but DON'T
+    # fetch related-song recommendations from YouTube (that's the
+    # `enabled` mode and would surprise users by playing forever).
+    # Idempotent: setting on every play() call is harmless and cheap.
+    player.autoplay = wavelink.AutoPlayMode.partial
 
     # wavelink.Playable.search defaults to `ytmsearch:` (YouTube Music)
     # when no prefix is present. Don't prepend `ytsearch:` ourselves --
