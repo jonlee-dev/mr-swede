@@ -32,7 +32,12 @@ google-cloud-compute = "^1.19.0"
 httpx = "^0.27.0"
 # Lavalink client. Wavelink is the discord.py-aligned, smaller-surface
 # choice (vs Pomice / Mafic). Drives the music feature.
-wavelink = "^3.4.0"
+#
+# Pinned to 3.5+ because Lavalink 4.2 requires a `channelId` field in
+# the voice-state PATCH (and the rest of the DAVE/E2EE protocol),
+# which Wavelink 3.5.1 added. 3.4.x sends an old voice payload that
+# Lavalink 4.2 rejects with HTTP 400.
+wavelink = "^3.5.0"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.0.0"
