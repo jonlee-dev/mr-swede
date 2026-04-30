@@ -149,6 +149,55 @@ reads `latest`). Until you seed it, `valheim-fetch-secrets.service` will
 fail and `valheim.service` will refuse to start — that's intentional, not a
 bug.
 
+### Lavalink (music) password
+
+Same shape as the Valheim password. Seed once after the first apply that
+creates the `lavalink-server-password` secret container:
+
+```bash
+echo -n "$(openssl rand -hex 32)" | \
+  gcloud secrets versions add lavalink-server-password \
+    --project="$PROJECT_ID" --data-file=-
+```
+
+A short password trips a hard guard in `lavalink/scripts/fetch-secrets.sh`
+(< 16 chars → boot fails). Use a long random value — Lavalink's REST/WS
+endpoints are exposed on the public internet for the bot to reach them.
+
+### Spotify Developer App credentials (optional)
+
+Required only if you want `/music play <spotify-url>` to work. Without
+this seeded, Lavalink boots fine and YouTube/HTTP queries work; Spotify
+URLs fail cleanly with a "couldn't resolve" error in Discord.
+
+1. Register a free Spotify Developer App at
+   <https://developer.spotify.com/dashboard>. No redirect URIs needed —
+   we use the `client_credentials` grant, which doesn't involve user
+   OAuth. Copy the **Client ID** and **Client Secret**.
+
+2. Seed the GSM secret:
+
+   ```bash
+   echo -n '{"client_id":"YOUR_ID","client_secret":"YOUR_SECRET"}' | \
+     gcloud secrets versions add spotify-client-credentials \
+       --project="$PROJECT_ID" --data-file=-
+   ```
+
+3. Reset the Lavalink VM (or wait for the next idle-watcher cycle) so
+   `fetch-secrets.sh` picks up the new credentials and writes
+   `LAVASRC_SPOTIFY_ENABLED=true` to `/etc/lavalink/secret.env`:
+
+   ```bash
+   gcloud compute instances reset lavalink-server --zone us-central1-a
+   ```
+
+   Or just wait — the next `/music play` after the VM auto-stops will
+   bring it back up with the new config.
+
+Rotation is the same `gcloud secrets versions add` command with a new
+JSON value, followed by a Lavalink VM reset. The bot doesn't need to
+restart — the credentials live entirely on the Lavalink VM.
+
 ## Disaster recovery
 
 If you ever need to re-bootstrap (new GCP project, lost state, etc.):

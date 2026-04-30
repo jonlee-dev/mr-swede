@@ -1,7 +1,7 @@
 # Mr. Swede — Product Requirements & Architecture
 
 **Status**: living document. Updated when significant decisions land.
-**Last revised**: 2026-04-29
+**Last revised**: 2026-04-30
 **Owners**: jonlee-dev
 
 This document describes what Mr. Swede *is*, what it *does*, what it *will do*, and the architectural rules that keep adding features cheap. It is the source of truth when an existing doc and this PRD disagree.
@@ -374,7 +374,7 @@ Every behavior worth toggling has an env var in [`bot/src/config/settings.py`](.
 |---|---|---|
 | ✅ Done | **Music feature (v4.0)** | Shipped — see §4. Wavelink 3.5 + Lavalink 4.2.2 + on-demand GCE. |
 | ⚙️ In flight | **Stale-session hardening (v4.1)** | `_ensure_node_connected` adds a `/v4/info` health check that detects a stale Wavelink session (left over after a Lavalink VM stop/start cycle) and forces a fresh `Pool.connect`. Removes the manual bot-bounce step from the runbook. |
-| ⏳ Next | **Spotify URLs + URL-resolved playlists (v4.2)** | See §9. lavasrc plugin on Lavalink + Spotify Developer credentials in GSM + bot enqueue support for playlist results. |
+| ⚙️ Shipped (server-side; awaiting Spotify Developer App seed) | **Spotify URLs + URL-resolved playlists (v4.2)** | See §9. lavasrc plugin loaded on Lavalink, GSM secret container in place, bot iterates playlists with a 100-track cap and renders a summary embed. Spotify URLs work the moment the user seeds the `spotify-client-credentials` secret per `docs/bootstrap.md`. |
 | 📋 Backlog | **Valheim mod support** | BEPINEX or ValheimPlus loader; mod files via GCS bucket; bot command to apply pending mods at next restart. Design open. |
 | 📋 Backlog | **Stop+reboot persistence validation** | Stress-test that the data disk survives stop/start cycles correctly across all the things that can boot the VM. |
 | 📋 Backlog | **Load testing** | What's the e2-standard-2 ceiling? Does world building under multi-player load degrade? Ticket: pick a stress profile, run for 30 min, decide if we bump to e2-standard-4. |
@@ -405,12 +405,20 @@ Decisions captured here so future-us doesn't re-litigate.
 | 2026-04-29 | **Idle watcher iterates targets in one Cloud Function, not per-target functions** | One scheduler, one zip, one IAM surface. Adding a target is a 3-line change in `main.py`. Cost is identical (under free tier either way). |
 | 2026-04-29 | **Idle watcher state: one bucket, multiple objects (`state-<target>.json`), not multiple buckets** | Cheaper, simpler IAM (one `objectUser` binding), trivial to enumerate. |
 | 2026-04-29 | **Promote Spotify URL/playlist support to next priority** | Friend group asked. URL resolution is a much smaller commitment than per-user libraries (no persistence) and fits the existing services/music boundary. |
+| 2026-04-30 | **Hard 100-track cap on playlist enqueue, surface truncation** | Friend-group playlists are 10-30; 100 is comfortably above that and prevents a 5000-track YouTube auto-mix from ever filling the queue. Cap applies to YouTube + Spotify + albums uniformly. |
+| 2026-04-30 | **Single GSM secret with JSON for Spotify credentials, not two split secrets** | One IAM binding, atomic rotation (no client_id/secret pairing race), mirrors `discord-bot-secrets` shape. |
+| 2026-04-30 | **lavasrc Spotify source disabled by default; gated on `LAVASRC_SPOTIFY_ENABLED` from fetch-secrets** | Lavalink VM should boot fine even when the Spotify secret has no versions yet (fresh apply, user hasn't registered Dev App). YouTube/HTTP queries keep working; Spotify URLs error cleanly. Removes a "first apply bricks the bot" footgun. |
+| 2026-04-30 | **Single `play()` returning `PlayResult` discriminated union, not separate `play_track`/`play_playlist`** | Cog branches on `playlist_title is not None`; one function, one shape, easier cog tests, easier to evolve when we add e.g. live-stream URL handling. |
+| 2026-04-30 | **Fail-clean (don't fall back to YouTube search) when a Spotify URL fails to resolve** | Falling back would silently play a wrong track. Better to surface the failure so the user can fix the URL or seed credentials. |
 
 ---
 
-## 9. Next major work: Spotify URLs + URL-resolved playlists (v4.2)
+## 9. Spotify URLs + URL-resolved playlists (v4.2 — shipped pending credential seed)
 
-This is the next planned feature. **Sketch only — implementation will start with its own grilling round before code.**
+Status: bot, infra, and Lavalink server-side all shipped. Spotify URLs
+will start working the moment a Spotify Developer App is registered
+and the `spotify-client-credentials` GSM secret is seeded — see
+[`docs/bootstrap.md`](bootstrap.md#spotify-developer-app-credentials-optional).
 
 ### What it covers (and what it doesn't)
 

@@ -136,7 +136,46 @@ cached connection is stale.
    stale-session detection improvement in the bot's `_ensure_node_connected`
    should remove the need for this manual bounce going forward.
 
-### 10. Music plays silently / bot joins VC but no audio
+### 10. Spotify URLs fail to resolve (`couldn't resolve that Spotify URL` or "no source for that URL")
+
+The lavasrc plugin handles Spotify URL resolution. Two distinct failure
+shapes; check both:
+
+1. **Spotify source isn't enabled.** The fetch-secrets script gates
+   lavasrc Spotify behind the presence of the `spotify-client-credentials`
+   secret. SSH to the Lavalink VM and check:
+
+   ```bash
+   sudo cat /etc/lavalink/secret.env | grep LAVASRC_SPOTIFY
+   ```
+
+   If you see `LAVASRC_SPOTIFY_ENABLED=false`, the secret either has no
+   versions yet or fetch-secrets couldn't reach it. Seed (or re-seed)
+   per [`docs/bootstrap.md`](bootstrap.md#spotify-developer-app-credentials-optional)
+   then `gcloud compute instances reset lavalink-server`.
+
+2. **Credentials are seeded but Spotify is rejecting the request.**
+   Likely a stale or revoked client_secret. Check Lavalink's logs:
+
+   ```bash
+   sudo journalctl -u lavalink -e -n 100 | grep -i spotify
+   ```
+
+   `401 Unauthorized` on the token-exchange URL = bad credentials.
+   Rotate the Spotify Developer App secret (the dashboard at
+   developer.spotify.com lets you regenerate), seed the new value via
+   GSM, reset the Lavalink VM.
+
+   `429 Too Many Requests` = rate limit. Spotify's client-credentials
+   tier has a generous quota; if we're hitting it our usage exploded.
+   Investigate before raising the limit.
+
+3. **Lavalink booted before the secret was reachable.** Boot ordering:
+   `lavalink-fetch-secrets.service` runs once before `lavalink.service`.
+   If the secret was seeded AFTER Lavalink started, it won't pick up
+   the change. Reset the VM.
+
+### 11. Music plays silently / bot joins VC but no audio
 
 Almost always a Discord-voice-protocol-versions mismatch. Known good combo:
 

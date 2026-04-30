@@ -150,7 +150,7 @@ Dot-notation flat keys (`"mr-swede.token": "..."`) are also accepted for backwar
 | `/valheim status` | Reports VM state, PlayFab join code, server password, and player count |
 | `/valheim start` | Starts the Valheim GCE VM (idempotent — safe if already running) |
 | `/valheim stop` | Stops the Valheim GCE VM (idempotent) |
-| `/music play <query>` | Auto-starts the Lavalink VM, joins your VC, plays a YouTube/SoundCloud/HTTP query |
+| `/music play <query>` | Auto-starts the Lavalink VM, joins your VC, plays a YouTube search/URL or Spotify track/playlist/album URL. Up to 100 tracks per playlist URL. |
 | `/music skip` / `pause` / `resume` / `stop` | Playback control (`stop` clears queue + leaves) |
 | `/music queue` / `nowplaying` | Inspect what's playing |
 | `/music volume <0-100>` / `shuffle` / `loop <off\|track\|queue>` | Tune playback |
@@ -167,7 +167,7 @@ The `/music` commands call into `src.services.music` (Wavelink wrapper around La
 |---|---|
 | Runtime | Python 3.12 |
 | Bot framework | discord.py[voice] 2.x (slash commands only; PyNaCl for voice) |
-| Music client | Wavelink 3.5.x → Lavalink 4.2.x (Java, on a separate GCE VM) |
+| Music client | Wavelink 3.5.x → Lavalink 4.2.x (Java, on a separate GCE VM); Lavalink loads `youtube-plugin` + `lavasrc` (Spotify URL resolution) |
 | HTTP | FastAPI + uvicorn (Cloud Run health checks) |
 | Cloud | Google Cloud Run + Secret Manager + Compute Engine |
 | Config | Pydantic Settings |

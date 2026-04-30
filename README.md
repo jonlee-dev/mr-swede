@@ -47,7 +47,7 @@ See [TODO.md](./TODO.md) for the cutover checklist and the manual prerequisites 
 | `/valheim status` | Show VM state, PlayFab join code, server password, and player count |
 | `/valheim start` | Start the Valheim VM (idempotent) |
 | `/valheim stop` | Stop the Valheim VM (idempotent) |
-| `/music play <query>` | Auto-starts the Lavalink VM (idempotent), joins your voice channel, plays a YouTube/SoundCloud/HTTP query |
+| `/music play <query>` | Auto-starts the Lavalink VM (idempotent), joins your voice channel, plays a YouTube search/URL or a Spotify track / playlist / album URL. YouTube playlist URLs work too. Up to 100 tracks per URL. |
 | `/music skip` | Skip the current track |
 | `/music pause` / `/music resume` | Toggle playback |
 | `/music stop` | Stop playback, clear the queue, leave the voice channel |
@@ -243,7 +243,7 @@ See [docs/architecture.md](docs/architecture.md) for the network/data-flow diagr
 |---|---|
 | Runtime | Python 3.12 |
 | Discord | discord.py[voice] 2.x (slash commands only; PyNaCl for voice) |
-| Music | Lavalink 4.2.x (Java, on GCE) + Wavelink 3.5.x (Python client) + youtube-source plugin |
+| Music | Lavalink 4.2.x (Java, on GCE) + Wavelink 3.5.x (Python client) + youtube-source plugin + lavasrc (Spotify URL resolution) |
 | HTTP | FastAPI + uvicorn (Cloud Run health checks) |
 | Secrets | Google Secret Manager |
 | Compute | google-cloud-compute (start/stop/describe) |

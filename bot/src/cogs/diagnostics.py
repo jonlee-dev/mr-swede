@@ -61,8 +61,9 @@ class DiagnosticsCog(commands.Cog, name="Diagnostics"):
             value=(
                 "`/music play` `/music skip` `/music pause` `/music resume` `/music stop`\n"
                 "`/music queue` `/music nowplaying` `/music volume` `/music shuffle` `/music loop`\n"
-                "Lavalink + YouTube. Invoke from the music command channel; "
-                "joins whatever voice channel you're in."
+                "Lavalink + YouTube + Spotify (track / playlist / album URLs). "
+                "Invoke from the music command channel; joins whatever voice "
+                "channel you're in."
             ),
             inline=False,
         )
