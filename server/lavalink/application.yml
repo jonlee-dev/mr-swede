@@ -1,13 +1,19 @@
 # Lavalink v4 server configuration.
 #
 # Spring Boot resolves ${ENV_VAR} placeholders at JVM start from the
-# container's environment. SERVER_PASSWORD lands here via the
+# container's environment. The Lavalink password lands here via the
 # fetch-secrets oneshot writing /etc/lavalink/secret.env, which
-# docker-compose loads as env_file.
+# lavalink.service loads via EnvironmentFile=. Same for the Spotify
+# credentials when present.
 #
-# YouTube via the official lavalink-devs youtube-plugin (the built-in
-# YouTube source in Lavalink v4 was deprecated when YouTube changed
-# their API; the plugin tracks upstream and is the supported path).
+# Plugins:
+#   - youtube-plugin: replaces Lavalink's built-in YouTube source
+#     (deprecated when YouTube changed their API); tracks upstream.
+#   - lavasrc: resolves Spotify track/playlist/album URLs (requires a
+#     Spotify Developer App; credentials seeded via GSM at
+#     spotify-client-credentials). Lavasrc looks up the metadata, then
+#     falls back to YouTube via the youtube-plugin for actual audio.
+#     Disabled cleanly when credentials aren't present.
 
 server:
   port: 2333
@@ -45,7 +51,12 @@ lavalink:
     resamplingQuality: LOW
     trackStuckThresholdMs: 10000
     useSeekGhosting: true
-    youtubePlaylistLoadLimit: 6
+    # Cap how many tracks a YouTube playlist URL can resolve to. 100
+    # comfortably covers normal user-curated playlists; tracks beyond
+    # are surfaced to the user as a "truncated" warning by the bot.
+    # Spotify playlists/albums are capped separately under
+    # plugins.lavasrc.spotify.* below.
+    youtubePlaylistLoadLimit: 100
     playerUpdateInterval: 5
     youtubeSearchEnabled: true
     soundcloudSearchEnabled: false
@@ -53,6 +64,14 @@ lavalink:
 
   plugins:
     - dependency: "dev.lavalink.youtube:youtube-plugin:1.13.5"
+      repository: "https://maven.lavalink.dev/releases"
+      snapshot: false
+    # lavasrc: Spotify URL resolution. Pinned to a 4.x stable release
+    # known to work against Lavalink 4.2.x. Bumping it should be a
+    # deliberate change with a smoke-test pass (Spotify track URL,
+    # playlist URL, album URL) -- Spotify's API contract is the
+    # surface lavasrc adapts.
+    - dependency: "com.github.topi314.lavasrc:lavasrc-plugin:4.4.0"
       repository: "https://maven.lavalink.dev/releases"
       snapshot: false
 
@@ -67,6 +86,45 @@ plugins:
       - ANDROID_VR
       - WEB
       - WEBEMBEDDED
+
+  lavasrc:
+    # When lavasrc resolves a Spotify track to metadata, it then
+    # searches YouTube for the actual audio (Spotify itself doesn't
+    # expose stream-able audio outside its own apps). The %ISRC%
+    # provider is a stronger match (matches the recording, not just
+    # the title); falls back to a plain title search.
+    providers:
+      - "ytsearch:\"%ISRC%\""
+      - "ytsearch:%QUERY%"
+    sources:
+      # Toggled by fetch-secrets.sh based on whether the Spotify
+      # credentials secret is seeded. False = lavasrc still loads but
+      # rejects Spotify URLs cleanly; the bot surfaces a fail-clean
+      # error to the user.
+      spotify: ${LAVASRC_SPOTIFY_ENABLED:false}
+      applemusic: false
+      deezer: false
+      yandexmusic: false
+      flowerytts: false
+      # We use the youtube-plugin (above) for YouTube; lavasrc's
+      # built-in YouTube source would conflict.
+      youtube: false
+    spotify:
+      # Empty defaults are safe: when LAVASRC_SPOTIFY_ENABLED=false
+      # lavasrc never tries to authenticate. Spring's ${VAR:default}
+      # syntax keeps Lavalink booting even when the env vars aren't
+      # set at all.
+      clientId: "${LAVASRC_SPOTIFY_CLIENT_ID:}"
+      clientSecret: "${LAVASRC_SPOTIFY_CLIENT_SECRET:}"
+      # ISO-3166 country code that gates which catalog Spotify returns.
+      # US gives the broadest coverage for our friend group; can be
+      # overridden via env if needed.
+      countryCode: "${LAVASRC_SPOTIFY_COUNTRY:US}"
+      # Same 100-track cap as youtubePlaylistLoadLimit so the bot's
+      # PLAYLIST_TRACK_CAP stays the only place that ever rejects
+      # tracks for being too many.
+      playlistLoadLimit: 100
+      albumLoadLimit: 100
 
 logging:
   file:

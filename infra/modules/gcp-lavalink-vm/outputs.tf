@@ -23,6 +23,11 @@ output "server_password_secret_id" {
   value       = google_secret_manager_secret.server_password.secret_id
 }
 
+output "spotify_credentials_secret_id" {
+  description = "Secret Manager secret ID for the Spotify Developer App JSON credentials consumed by lavasrc. Seed/rotate with `gcloud secrets versions add`."
+  value       = google_secret_manager_secret.spotify_credentials.secret_id
+}
+
 output "lavalink_port" {
   description = "TCP port Lavalink binds. Bot reads this to construct its WebSocket URL."
   value       = var.lavalink_port

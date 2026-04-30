@@ -61,6 +61,12 @@ variable "deletion_protection" {
   default     = true
 }
 
+variable "spotify_credentials_secret_id" {
+  description = "Secret Manager secret_id holding the Spotify Developer App credentials as JSON {client_id, client_secret}. Consumed by the lavasrc plugin to resolve Spotify URLs. Seeded out-of-band; see secret.tf for the gcloud command."
+  type        = string
+  default     = "spotify-client-credentials"
+}
+
 variable "labels" {
   description = "Labels applied to all resources for cost attribution."
   type        = map(string)
