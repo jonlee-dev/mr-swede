@@ -36,14 +36,39 @@ class DiagnosticsCog(commands.Cog, name="Diagnostics"):
     async def info(self, interaction: discord.Interaction) -> None:
         from src import __version__
 
+        # Mr. Swede is multi-feature now: Valheim server controls,
+        # music playback, and a foundation for whatever cog ships next.
+        # Keep this embed in sync with new top-level command groups.
         embed = discord.Embed(
             title="Mr. Swede",
-            description="Discord-controlled Valheim server.",
+            description=(
+                "A do-it-all Discord bot for our server. Right now: a "
+                "Valheim on-demand game server and a Lavalink-backed "
+                "music player, with more on the way."
+            ),
             color=discord.Color.blue(),
         )
         embed.add_field(
-            name="Commands",
-            value="`/valheim status` `/valheim start` `/valheim stop`",
+            name="Valheim",
+            value=(
+                "`/valheim start` `/valheim stop` `/valheim status`\n"
+                "On-demand GCE VM. Auto-stops after the server is empty for ~60-90 min."
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="Music",
+            value=(
+                "`/music play` `/music skip` `/music pause` `/music resume` `/music stop`\n"
+                "`/music queue` `/music nowplaying` `/music volume` `/music shuffle` `/music loop`\n"
+                "Lavalink + YouTube. Invoke from the music command channel; "
+                "joins whatever voice channel you're in."
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="Diagnostics",
+            value="`/ping` `/info`",
             inline=False,
         )
         embed.set_footer(text=f"v{__version__} | {len(self.bot.guilds)} server(s)")

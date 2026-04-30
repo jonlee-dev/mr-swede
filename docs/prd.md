@@ -1,7 +1,7 @@
 # Mr. Swede — Product Requirements & Architecture
 
 **Status**: living document. Updated when significant decisions land.
-**Last revised**: 2026-04-28
+**Last revised**: 2026-04-29
 **Owners**: jonlee-dev
 
 This document describes what Mr. Swede *is*, what it *does*, what it *will do*, and the architectural rules that keep adding features cheap. It is the source of truth when an existing doc and this PRD disagree.
@@ -10,7 +10,7 @@ This document describes what Mr. Swede *is*, what it *does*, what it *will do*, 
 
 ## 1. Vision
 
-Mr. Swede is a personal Discord bot that lets a small friend group **operate cloud-hosted services from inside Discord**. Today: an on-demand Valheim server. Soon: a Lavalink-backed music player. Later: any other "useful thing that lives in cloud" the maintainer wants behind a slash command.
+Mr. Swede is a personal Discord bot that lets a small friend group **operate cloud-hosted services from inside Discord**. Today: an on-demand Valheim server, a Lavalink-backed music player. Tomorrow: Spotify URL/playlist support. Later: any other "useful thing that lives in cloud" the maintainer wants behind a slash command.
 
 Constraints that won't change:
 
@@ -21,16 +21,19 @@ Constraints that won't change:
 
 ---
 
-## 2. What exists today (v3.2.0)
+## 2. What exists today (v4.x)
+
+v4.0 shipped: music feature is live. v4.x is the current line with stability hardening on top.
 
 ### Components
 
 | Component | Where it lives | What it does |
 |---|---|---|
-| **Bot service** | [`bot/`](../bot/) — Cloud Run, Python 3.12 | Discord gateway client, FastAPI health endpoint. `min=1`, always-on CPU. |
-| **Bot infra** | [`infra/modules/gcp-bot-runtime`](../infra/modules/gcp-bot-runtime) | Cloud Run service + Cloud Build trigger + IAM + Discord secret container |
+| **Bot service** | [`bot/`](../bot/) — Cloud Run, Python 3.12 | Discord gateway client (with voice intent), FastAPI health endpoint. `min=1`, always-on CPU. |
+| **Bot infra** | [`infra/modules/gcp-bot-runtime`](../infra/modules/gcp-bot-runtime) | Cloud Run service + Cloud Build trigger + IAM + Discord secret container. Instance-scoped controller role bound to both VMs. |
 | **Valheim VM** | [`infra/modules/gcp-valheim-vm`](../infra/modules/gcp-valheim-vm) + [`server/`](../server/) | GCE VM running `lloesche/valheim-server`. Boot via metadata.startup-script (NOT cloud-init — Debian default doesn't ship cloud-init). |
-| **Idle watcher** | [`infra/modules/gcp-idle-watcher`](../infra/modules/gcp-idle-watcher) | Cloud Function + Scheduler that polls the VM's `/status.json` and stops it after N empty checks. |
+| **Lavalink VM** | [`infra/modules/gcp-lavalink-vm`](../infra/modules/gcp-lavalink-vm) + [`server/lavalink/`](../server/lavalink/) | GCE VM running the Lavalink jar directly under systemd. Stateless, no persistent disk. Reuses the Valheim VPC. |
+| **Idle watcher** | [`infra/modules/gcp-idle-watcher`](../infra/modules/gcp-idle-watcher) | Multi-target Cloud Function + Scheduler. Iterates over `[valheim, lavalink]`, probes each, stops independently. |
 | **Bootstrap** | [`infra/modules/gcp-bootstrap`](../infra/modules/gcp-bootstrap) | One-time TF state bucket + Workload Identity Federation + project APIs. |
 
 ### Discord surface
@@ -38,24 +41,33 @@ Constraints that won't change:
 | Command | Behavior |
 |---|---|
 | `/ping` | Latency check |
-| `/info` | Bot version + loaded cog list |
+| `/info` | Bot version + per-feature command list |
 | `/valheim status` | Show VM state, PlayFab join code, server password, player count |
 | `/valheim start` | Boot the Valheim VM (idempotent) |
 | `/valheim stop` | Stop the Valheim VM (idempotent) |
+| `/music play <query>` | Auto-start the Lavalink VM, join your VC, enqueue and play the resolved track |
+| `/music skip` | Skip the current track |
+| `/music pause` / `/music resume` | Toggle playback |
+| `/music stop` | Stop, clear queue, leave voice |
+| `/music queue` / `/music nowplaying` | Inspect playback state |
+| `/music volume <0-100>` / `/music shuffle` / `/music loop <off\|track\|queue>` | Tune playback |
+
+`/music *` is gated to a configured channel (`MUSIC_COMMAND_CHANNEL_ID`). The bot joins whichever voice channel the invoking user is currently in.
 
 ### Key architectural patterns we already follow (and will keep)
 
-1. **Cog per feature group** — `diagnostics.py`, `valheim.py`. Adding a feature means adding a cog, not extending an existing one.
-2. **Service module per external system** — `services/compute.py` (GCE), `services/server_query.py` (HTTP fetch from VM daemon). Cogs orchestrate; services do I/O.
+1. **Cog per feature group** — `diagnostics.py`, `valheim.py`, `music.py`. Adding a feature means adding a cog, not extending an existing one.
+2. **Service module per external system** — `services/compute.py` (GCE), `services/server_query.py` (Valheim daemon), `services/music.py` (Wavelink → Lavalink). Cogs orchestrate; services do I/O.
 3. **Frozen dataclasses for cross-module values** — `InstanceState`, `LiveStatus`. Public surface is a dataclass, not a dict-with-implicit-keys.
-4. **GSM-via-env-path** — secret resource paths are env vars (`DISCORD_SECRET_PATH`, `VALHEIM_PASSWORD_SECRET_PATH`). Bot SA gets secret-scoped IAM. No project-wide bindings.
-5. **GCE control plane = custom role + instance-scoped binding** — `mrSwedeVmController` (`compute.instances.{get,start,stop}` + `zoneOperations.get`), bound at the instance level. Both bot SA and idle-watcher SA use it.
-6. **Startup-script is idempotent** — runs every boot. First boot installs Docker; subsequent boots self-heal systemd units. Template files in [`server/`](../server/) are inlined as base64.
-7. **Local quality gates mirror CI** — `make -C bot check` runs the same ruff + mypy + pytest + poetry-lock-check that GitHub Actions runs.
+4. **GSM-via-env-path** — secret resource paths are env vars (`DISCORD_SECRET_PATH`, `VALHEIM_PASSWORD_SECRET_PATH`, `LAVALINK_PASSWORD_SECRET_PATH`). Bot SA gets secret-scoped IAM. No project-wide bindings.
+5. **GCE control plane = custom role + instance-scoped binding** — `mrSwedeVmController` (`compute.instances.{get,start,stop}` + `zoneOperations.get`), bound per-instance. Bot SA and idle-watcher SA both use it, both VMs.
+6. **Startup-script is idempotent** — runs every boot. Template files in [`server/`](../server/) and [`server/lavalink/`](../server/lavalink/) are inlined as base64.
+7. **Channel-scoped command gating via `app_commands.check`** — `requires_channel("<settings_attr>")` decorator factory in [`bot/src/utils/checks.py`](../bot/src/utils/checks.py). Pure-logic predicate, fully unit-tested.
+8. **Local quality gates mirror CI** — `make -C bot check` runs the same ruff + mypy + pytest + poetry-lock-check that GitHub Actions runs.
 
 ---
 
-## 3. Target architecture (v4.0)
+## 3. Architecture (current; v4.x)
 
 ```
                      Discord (gateway WSS + voice UDP)
@@ -67,7 +79,7 @@ Constraints that won't change:
                 │   │  Slash command tree   │ │
                 │   │  • /ping /info        │ │
                 │   │  • /valheim *         │ │
-                │   │  • /music * (NEW)     │ │
+                │   │  • /music *           │ │
                 │   └─────┬────────────┬────┘ │
                 │         │            │      │
                 │   ┌─────▼─────┐ ┌────▼────┐ │
@@ -83,33 +95,37 @@ Constraints that won't change:
    ┌────▼─────┐     ┌─────▼──────┐         ┌─────────▼──────────┐
    │ Valheim  │     │  Lavalink  │         │  Idle watcher      │
    │  VM      │     │   VM       │         │  (Cloud Function   │
-   │          │     │   (NEW)    │         │   + Scheduler)     │
+   │          │     │            │         │   + Scheduler)     │
    │ GCE      │     │  GCE       │         │                    │
    │ on-demand│     │  on-demand │         │ polls both VMs     │
    └────▲─────┘     └────▲───────┘         │ stops idle ones    │
+        │                │                  │ (state per target) │
         │                │                  └────────────────────┘
         │ stop/start     │ stop/start
         └────────────────┴── via mrSwedeVmController custom role
                             (instance-scoped per VM)
 ```
 
-### What's new in v4.0
+### What shipped in v4.0
 
-- **Music cog** ([`bot/src/cogs/music.py`](../bot/src/cogs/music.py)) using **Wavelink** to drive Lavalink.
-- **Lavalink VM** ([`infra/modules/gcp-lavalink-vm`](../infra/modules/gcp-lavalink-vm)) — GCE on-demand, mirrors `gcp-valheim-vm` shape.
-- **Lavalink runtime artifacts** ([`server/lavalink/`](../server/lavalink/)) — docker-compose, fetch-secrets, systemd units. Same pattern as `server/`.
-- **Idle watcher generalized** — currently keyed to one VM. Becomes a multi-target watcher (Valheim VM + Lavalink VM) with one state object per target.
-- **Music service module** ([`bot/src/services/music.py`](../bot/src/services/music.py)) — Wavelink node lifecycle, voice state forwarding, queue helpers.
+- **Music cog** ([`bot/src/cogs/music.py`](../bot/src/cogs/music.py)) using **Wavelink 3.5.x** to drive Lavalink.
+- **Lavalink VM** ([`infra/modules/gcp-lavalink-vm`](../infra/modules/gcp-lavalink-vm)) — GCE `e2-small`, on-demand, jar under systemd (no Docker — the Lavalink Docker images had broken bundled JDKs at the time).
+- **Lavalink runtime artifacts** ([`server/lavalink/`](../server/lavalink/)) — `application.yml`, `fetch-secrets.sh`, two systemd units. Mirrors `server/` shape.
+- **Idle watcher generalized** — multi-target now. Iterates `[(valheim, /status.json), (lavalink, /v4/players)]`. State is `state-<target>.json` in the same bucket.
+- **Music service module** ([`bot/src/services/music.py`](../bot/src/services/music.py)) — idempotent node connect, search, play, queue helpers.
+- **Channel gating** ([`bot/src/utils/checks.py`](../bot/src/utils/checks.py)) — `@requires_channel(...)` decorator factory. Used by `/music *`; reusable for any future channel-scoped feature.
 
 ---
 
-## 4. The music feature (the actual work for v4.0)
+## 4. The music feature (shipped — kept for context)
 
 ### What "controlled in #bot-spam" means
 
 `/music *` slash commands work only when invoked from a channel matching `MUSIC_COMMAND_CHANNEL_ID` (env var, configurable). Invoked elsewhere → ephemeral "Use #bot-spam" reply, no I/O.
 
 The bot does NOT consume `MESSAGE_CONTENT` intent. Slash-only — same hygiene as the rest of the bot.
+
+The bot DOES consume the `voice_states` intent (required for joining VC), but only the bare minimum.
 
 ### Commands
 
@@ -125,11 +141,12 @@ The bot does NOT consume `MESSAGE_CONTENT` intent. Slash-only — same hygiene a
 | `/music shuffle` | Shuffle queue (idempotent if queue ≤ 1). |
 | `/music loop <off\|track\|queue>` | Loop mode. |
 
-Out of scope for v4.0:
+Out of scope for v4.0 (some now planned for v4.1+ — see §7):
 - `/music seek` — punt; nice-to-have, not core
-- Spotify URLs — `lavasrc` plugin operational weight not justified for now
-- Per-user playlists / saved queues
-- Slash autocomplete on `/music play` — would require live YouTube search on every keystroke
+- ~~Spotify URLs~~ — **promoted** to next major work item; see §7 + §9.
+- ~~Playlist support (URL-resolved)~~ — **promoted**; comes free with the lavasrc plugin once it lands.
+- Per-user *saved* playlists (a library) — still out of scope; would require persistent state.
+- Slash autocomplete on `/music play` — would require live search on every keystroke.
 
 ### State ownership
 
@@ -192,6 +209,7 @@ Queue empty + voice channel empty → bot disconnects voice (after 5min idle)
 | Bot restarts mid-playback | Bot re-establishes Wavelink WebSocket; current track is lost (queue too); user must re-`/music play`. |
 | Lavalink restarts mid-playback (rare — only on VM stop/start) | Same as above. |
 | Idle watcher stops Lavalink VM during silence | Next `/music play` triggers VM start automatically. ~30s cold start. |
+| Lavalink VM gets stopped + started again at a new public IP, bot has stale node session | **Open hardening item.** Today: bot bounce required. Planned: `_ensure_node_connected` adds a `/v4/info` health check that detects stale sessions and forces a fresh `Pool.connect`. Tracked in §7 as the next bot-side priority. |
 
 ### Wavelink integration boundary
 
@@ -319,15 +337,23 @@ If we ever want `/schedule announce "raid at 8pm"` or recurring events:
 
 **We don't build this in v4.0**. The hook for it is "the bot's FastAPI app accepts new endpoint registrations from cogs," which we can add the day we need it.
 
-### 6.5 Idle-watcher generalization (this we're doing in v4.0)
+### 6.5 Idle-watcher generalization (shipped in v4.0)
 
-Currently the watcher is hard-coded to `valheim-server`. To support Lavalink too:
+Done. The watcher iterates over a `TARGETS` list in [`infra/modules/gcp-idle-watcher/function/main.py`](../infra/modules/gcp-idle-watcher/function/main.py):
 
-- Watcher reads a list of `(instance_name, zone, status_endpoint, empty_checks_to_stop)` targets from env
-- State bucket holds one JSON object per target (`state-valheim-server.json`, `state-lavalink-server.json`)
-- Same scheduler, same function, multiple iterations per tick
+```python
+TARGETS = [
+    ("valheim",  VALHEIM_ZONE,  VALHEIM_INSTANCE,  _probe_valheim),
+    ("lavalink", LAVALINK_ZONE, LAVALINK_INSTANCE, _probe_lavalink),
+]
+```
 
-This is genuinely a deep-module change: same external interface (Cloud Scheduler hits the function), more capability inside.
+- Each target has its own probe function (Valheim: `/status.json`; Lavalink: authenticated `/v4/players`).
+- Each target has its own GCS state object (`state-valheim.json`, `state-lavalink.json`).
+- One Cloud Function, one scheduler, one tick — multiple iterations per tick.
+- Adding a third target = appending to `TARGETS` + adding a probe function. No new infra.
+
+Probe failures are conservatively treated as "unknown" (do NOT increment the counter), so a transient outage of one target's daemon won't cause a false stop.
 
 ### 6.6 Configurable knobs already in place
 
@@ -346,10 +372,13 @@ Every behavior worth toggling has an env var in [`bot/src/config/settings.py`](.
 
 | Priority | Work item | Notes |
 |---|---|---|
-| ⏳ Next | **Music feature (v4.0)** | This PRD's main subject |
+| ✅ Done | **Music feature (v4.0)** | Shipped — see §4. Wavelink 3.5 + Lavalink 4.2.2 + on-demand GCE. |
+| ⚙️ In flight | **Stale-session hardening (v4.1)** | `_ensure_node_connected` adds a `/v4/info` health check that detects a stale Wavelink session (left over after a Lavalink VM stop/start cycle) and forces a fresh `Pool.connect`. Removes the manual bot-bounce step from the runbook. |
+| ⏳ Next | **Spotify URLs + URL-resolved playlists (v4.2)** | See §9. lavasrc plugin on Lavalink + Spotify Developer credentials in GSM + bot enqueue support for playlist results. |
 | 📋 Backlog | **Valheim mod support** | BEPINEX or ValheimPlus loader; mod files via GCS bucket; bot command to apply pending mods at next restart. Design open. |
 | 📋 Backlog | **Stop+reboot persistence validation** | Stress-test that the data disk survives stop/start cycles correctly across all the things that can boot the VM. |
 | 📋 Backlog | **Load testing** | What's the e2-standard-2 ceiling? Does world building under multi-player load degrade? Ticket: pick a stress profile, run for 30 min, decide if we bump to e2-standard-4. |
+| 🔮 Future | **Per-user saved playlists** | Would require persistent state (Firestore or GCS object). Bigger architectural commitment than URL-resolved playlists; punt until URL-resolved playlists ship and we measure how often users want this. |
 | 🔮 Future | **Game server abstraction** | Trigger: a second game server lands. Refactor `compute.py` into `Protocol`+impl per §6.3. |
 | 🔮 Future | **Scheduled tasks** | Trigger: real user need for recurring announcements / reminders. §6.4 sketch. |
 | 🔮 Future | **VPC Flow Logs / Ops Agent on VMs** | When the next "I can't connect" debug session would have benefited from packet-level logs. ~$0.50/mo. |
@@ -370,10 +399,97 @@ Decisions captured here so future-us doesn't re-litigate.
 | 2026-04-28 | **Wavelink as Lavalink Python client** | Most discord.py-aligned, smaller surface, active maintenance |
 | 2026-04-28 | **Lose music queue on bot restart** | Hobby tolerance for context loss; reintroduce persistence only if it bites |
 | 2026-04-28 | **`/music *` only in #bot-spam** | Channel-scoped via env var, ephemeral redirect elsewhere |
+| 2026-04-29 | **Lavalink jar under systemd, NOT Docker** | The official Docker images had broken bundled JDKs (random ClassFormatErrors). Direct jar + `openjdk-17-jre-headless` is more reliable and removes a Docker dep we don't otherwise need on that VM. |
+| 2026-04-29 | **JVM `-Djava.net.preferIPv4Stack=true`** | GCE silently drops IPv6 egress for our project; without this flag the JVM hangs on TLS handshakes to YouTube/Discord. |
+| 2026-04-29 | **Lavalink 4.2.2 specifically (DAVE-aware) + Wavelink 3.5+ (sends channelId + DAVE)** | Discord rolled out E2EE/DAVE during v4.0 dev. Older Lavalink versions throw close code 4017; older Wavelink versions don't send `channelId` so Lavalink rejects voice payloads with 400. Specific pin combo is the only thing that worked. |
+| 2026-04-29 | **Idle watcher iterates targets in one Cloud Function, not per-target functions** | One scheduler, one zip, one IAM surface. Adding a target is a 3-line change in `main.py`. Cost is identical (under free tier either way). |
+| 2026-04-29 | **Idle watcher state: one bucket, multiple objects (`state-<target>.json`), not multiple buckets** | Cheaper, simpler IAM (one `objectUser` binding), trivial to enumerate. |
+| 2026-04-29 | **Promote Spotify URL/playlist support to next priority** | Friend group asked. URL resolution is a much smaller commitment than per-user libraries (no persistence) and fits the existing services/music boundary. |
 
 ---
 
-## 9. Reading list — when joining this codebase
+## 9. Next major work: Spotify URLs + URL-resolved playlists (v4.2)
+
+This is the next planned feature. **Sketch only — implementation will start with its own grilling round before code.**
+
+### What it covers (and what it doesn't)
+
+In scope:
+- `/music play <spotify-track-url>` — resolves the track via Spotify's API, plays the corresponding audio (which Lavalink finds on YouTube under the hood — Spotify itself doesn't expose stream-able audio).
+- `/music play <spotify-playlist-url>` — resolves the playlist, enqueues each track. Same goes for Spotify album URLs.
+- `/music play <youtube-playlist-url>` — already partially works via Lavalink's youtube-source plugin; verify and document.
+- A "+N tracks queued" embed when a playlist resolves to many tracks (avoid spamming the channel with N "Now playing" messages).
+
+Out of scope (still):
+- Per-user saved playlists / a library — needs persistent state, separate ticket.
+- Spotify *playback* (the app/device flow) — we're not a Spotify Connect target. We resolve metadata and play YouTube audio.
+- Apple Music, Deezer, etc. — lavasrc supports them, but we don't have demand. Add when asked.
+
+### Architecture sketch
+
+```
+                 /music play <spotify-url>
+                       │
+                       ▼
+              ┌────────────────────┐
+              │ Bot music cog      │
+              │ (no change to API) │
+              └────────┬───────────┘
+                       │ services.music.play(query)
+                       ▼
+              ┌────────────────────┐
+              │ services/music.py  │
+              │ Wavelink.search()  │
+              └────────┬───────────┘
+                       │ Lavalink REST /loadtracks
+                       ▼
+              ┌────────────────────┐  Spotify Web API   ┌──────────────┐
+              │ Lavalink           │───────────────────►│  Spotify     │
+              │  + lavasrc plugin  │  (client_credentials)│ /tracks etc.│
+              └────────┬───────────┘                    └──────────────┘
+                       │ For each resolved track:
+                       │   YouTube fallback search
+                       ▼
+              ┌────────────────────┐
+              │ youtube-source     │
+              │  plugin (existing) │
+              └────────────────────┘
+```
+
+The bot's public surface barely moves. `/music play` already accepts arbitrary strings; lavasrc routes Spotify URLs to its resolver, falls back to YouTube for the actual audio. Most of the work is on the Lavalink side + secret seeding.
+
+### What changes
+
+| Layer | Change |
+|---|---|
+| Lavalink VM | Add `lavasrc` plugin to `application.yml` plugins list. Configure with `spotify.clientId` / `spotify.clientSecret` (env-substituted by Spring). |
+| Lavalink VM | `fetch-secrets.sh` learns to fetch a new GSM secret (`spotify-client-credentials`) and write it to `/etc/lavalink/secret.env` alongside the existing password. |
+| Terraform — `gcp-lavalink-vm` | New `google_secret_manager_secret` for `spotify-client-credentials`. Lavalink VM SA gets `secretmanager.secretAccessor` on it (secret-scoped). Optional input variable: `spotify_credentials_secret_id` (defaulted, configurable). |
+| Bot — `services/music.py` | Probably zero changes — Wavelink already returns `Playlist` objects when the search resolves to one. The cog needs to handle the multi-track-enqueue path. |
+| Bot — `cogs/music.py` | New embed for "Added N tracks from <playlist title>". Loop and append to `wavelink.Queue` for non-trivial playlist sizes. |
+| Bot — settings | No new env vars on the bot side (Lavalink owns the Spotify credentials, not the bot). |
+| Idle watcher | No change. The `/v4/players` probe is source-agnostic. |
+| Tests | `cogs/music.py` test for the playlist-enqueue branch. Lavasrc itself stays unmocked at the lavalink boundary; the cog just sees Wavelink's result objects. |
+
+### Cost / operational shape
+
+- **No new always-on resources.** Lavalink already runs on-demand; lavasrc is a plugin, not a separate process.
+- **Spotify Developer app is free** at the rate limits we'll hit (per-track metadata calls a few times per day).
+- **Idle-watcher behavior is unchanged** — same e2-small VM, same auto-stop window.
+
+### Open questions to resolve before coding
+
+1. Should `/music play <playlist-url>` enqueue all tracks immediately, or paginate (e.g. first 50, "load more" button)? Bias toward "all immediately" — playlists in our friend group are 10-30 tracks, not 1000.
+2. Should we cap the playlist size to prevent a runaway 5000-track YouTube playlist from being enqueued? Probably yes, with a friendly error at e.g. 200 tracks.
+3. Volume/loop/shuffle behavior across playlist enqueue — no new design; existing semantics carry over.
+4. Spotify credential rotation cadence — we don't rotate the bot token or the Lavalink password actively; treat the Spotify credentials the same.
+5. Failure isolation — if lavasrc fails to resolve a Spotify URL, does the cog fall back to a string search, or fail clean? Lean fail-clean for clarity.
+
+These get nailed down in the v4.2 grilling round.
+
+---
+
+## 10. Reading list — when joining this codebase
 
 1. This PRD (you are here)
 2. [`docs/architecture.md`](architecture.md) — diagrams + interface boundaries

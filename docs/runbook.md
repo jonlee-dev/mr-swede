@@ -10,19 +10,29 @@ won't fix it.
 ```bash
 PROJECT_ID="$(gcloud config get-value project)"
 ZONE=us-central1-a
-INSTANCE=valheim-server
 
-# Connect (no public port 22 — IAP tunnel only)
-gcloud compute ssh "$INSTANCE" --tunnel-through-iap --zone "$ZONE" --project "$PROJECT_ID"
-
-# Service-level
+# Valheim VM
+gcloud compute ssh valheim-server --tunnel-through-iap --zone "$ZONE" --project "$PROJECT_ID"
 sudo systemctl status valheim
 sudo journalctl -u valheim -e -n 200
 sudo journalctl -u valheim-fetch-secrets -e -n 50
-
-# Container-level
 sudo docker compose -f /opt/valheim/docker-compose.yml logs --tail 200
 sudo docker compose -f /opt/valheim/docker-compose.yml ps
+
+# Lavalink VM
+gcloud compute ssh lavalink-server --tunnel-through-iap --zone "$ZONE" --project "$PROJECT_ID"
+sudo systemctl status lavalink
+sudo journalctl -u lavalink -e -n 200
+sudo journalctl -u lavalink-fetch-secrets -e -n 50
+
+# Bot (Cloud Run)
+gcloud run services logs read mr-swede --region=us-central1 --limit=100
+
+# Idle watcher (multi-target Cloud Function)
+gcloud functions logs read valheim-idle-watcher --region=us-central1 --limit=20
+gcloud scheduler jobs run valheim-idle-watcher-tick --location=us-central1   # fire manually
+gsutil cat gs://${PROJECT_ID}-idle-watcher-state/state-valheim.json
+gsutil cat gs://${PROJECT_ID}-idle-watcher-state/state-lavalink.json
 ```
 
 ## Scenarios
@@ -99,8 +109,40 @@ Both the VM and the data disk have deletion guards. Recipe:
 3. `terraform apply` the flag changes, then `terraform destroy -target=module.valheim_vm`.
 4. Restore the flags before the next apply, otherwise Terraform plan will show a no-op drift.
 
-### 8. Idle watcher (Phase 7) is stopping the server too aggressively
+### 8. Idle watcher is stopping a server too aggressively
 
-1. Check the Cloud Function logs for A2S query responses.
-2. Common cause: firewall rule changed and the watcher can't reach the query port.
-3. Override: manually start the VM via `/valheim start` or `gcloud compute instances start $INSTANCE --zone $ZONE`.
+The watcher iterates over both targets each tick. State is stored
+per-target as `state-<target>.json` in the watcher's state bucket.
+
+1. Check the Cloud Function logs (`gcloud functions logs read valheim-idle-watcher --region=us-central1 --limit=30`). Each tick logs one line per target, e.g. `[valheim] empty 1/2` or `[lavalink] server is active, reset counter (was 0)`.
+2. Common cause: firewall rule changed or the daemon crashed and the watcher can't reach the probe endpoint. Probe failures are logged as `probe to <ip> failed, no-op` and do NOT increment the counter, so this should not in itself cause an early stop. If it does, check that the URL pattern in `infra/modules/gcp-idle-watcher/function/main.py` matches what the VM exposes.
+3. Override: manually start the affected VM (`/valheim start` or `/music play`) or via `gcloud compute instances start <instance> --zone $ZONE`. To wipe a misbehaving counter: `echo '{"consecutive_empty": 0}' | gsutil cp - gs://${PROJECT_ID}-idle-watcher-state/state-<target>.json`.
+
+### 9. /music play fails with "no nodes are currently CONNECTED" or hangs
+
+The bot caches the Wavelink node connection across requests. When the
+Lavalink VM gets restarted (e.g. after the idle watcher stops it and
+the next `/music play` brings it back up at a new public IP), the
+cached connection is stale.
+
+1. Check `gcloud functions logs read valheim-idle-watcher --region=us-central1` — if it just stopped Lavalink, that's the cause.
+2. Check Lavalink itself is up: `curl http://<lavalink-vm-public-ip>:2333/v4/info -H "Authorization: $LAVALINK_PASSWORD"` should return JSON.
+3. Bounce the bot revision to clear the cached node:
+   ```bash
+   gcloud run services update mr-swede --region=us-central1 \
+     --update-env-vars=BOT_BOUNCE=$(date +%s)
+   ```
+   (This forces a new revision; the new instance reconnects fresh.) The
+   stale-session detection improvement in the bot's `_ensure_node_connected`
+   should remove the need for this manual bounce going forward.
+
+### 10. Music plays silently / bot joins VC but no audio
+
+Almost always a Discord-voice-protocol-versions mismatch. Known good combo:
+
+- Lavalink **4.2.2** (DAVE/E2EE-aware) running directly under systemd, NOT in Docker
+- `discord.py[voice]` extra installed (PyNaCl required) and `wavelink ^3.5.0` (sends `channelId` + DAVE)
+- JVM flag `-Djava.net.preferIPv4Stack=true` (prevents silent IPv6 hangs on GCE)
+- `openjdk-17-jre-headless` (Lavalink 4.x rejects 21+ in some configs)
+
+If you're debugging a regression: hit Lavalink directly with `curl /v4/info` and check the version, then check the bot's `pyproject.toml` for the wavelink pin. Mismatches usually surface as Discord close codes 4003 (auth) or 4017 (E2EE required) in the Lavalink logs.

@@ -1,8 +1,8 @@
 # Mr. Swede
 
-Discord-controlled Valheim server. Slash commands start, stop, and check status of a Google Compute Engine VM that hosts the game server.
+Multi-feature Discord bot. Today: an on-demand Valheim game server (`/valheim *`) and a Lavalink-backed music player (`/music *`). The cog architecture is built so adding the next feature is just dropping in another cog.
 
-The bot runs on Cloud Run with `min-instances=1` (Discord requires a persistent gateway connection). The Valheim VM is on-demand: idle most of the time, woken via `/valheim start`.
+The bot runs on Cloud Run with `min-instances=1` (Discord requires a persistent gateway connection). Both the Valheim and Lavalink VMs are on-demand GCE instances: idle most of the time, woken on first `/valheim start` or `/music play`, auto-stopped by the idle watcher after ~60-90 min of inactivity.
 
 ---
 
@@ -13,18 +13,22 @@ bot/
 ├── src/
 │   ├── main.py            # Uvicorn launcher
 │   ├── http.py            # FastAPI app + lifespan + /health endpoint
-│   ├── bot.py             # Discord bot (cog loader, error handler, intents)
+│   ├── bot.py             # Discord bot (cog loader, error handler, intents incl. voice)
 │   ├── config/
 │   │   ├── settings.py    # Pydantic settings (env + .env)
-│   │   ├── secrets.py     # GSM client (Discord token)
+│   │   ├── secrets.py     # GSM client (Discord token, Valheim password, Lavalink password)
 │   │   └── logging.py     # structlog setup
 │   ├── cogs/
 │   │   ├── diagnostics.py # /ping, /info
-│   │   └── valheim.py     # /valheim status|start|stop
+│   │   ├── valheim.py     # /valheim status|start|stop
+│   │   └── music.py       # /music play|skip|pause|resume|stop|queue|nowplaying|...
 │   ├── services/
 │   │   ├── compute.py     # GCE start/stop/describe via google-cloud-compute
-│   │   └── server_query.py # HTTP fetch of /status.json from the VM's log-scraping daemon
-│   └── utils/helpers.py
+│   │   ├── server_query.py # HTTP fetch of /status.json from the Valheim VM's daemon
+│   │   └── music.py       # Wavelink wrapper (node connect, search, play, idempotent)
+│   └── utils/
+│       ├── checks.py      # @requires_channel decorator (gates /music to #bot-spam)
+│       └── helpers.py
 ├── tests/
 │   ├── unit/              # Fast, hermetic tests
 │   └── conftest.py
@@ -113,9 +117,15 @@ gcloud run services update mr-swede \
 | `DISCORD_GUILD_ID` | _(unset)_ | If set, slash commands sync to this guild only |
 | `GCP_PROJECT_ID` | auto-detect | Cloud Run sets `GOOGLE_CLOUD_PROJECT`, picked up automatically |
 | `VALHEIM_ZONE` | `us-central1-a` | Where the Valheim VM lives |
-| `VALHEIM_INSTANCE_NAME` | `valheim-server` | GCE instance name to control |
+| `VALHEIM_INSTANCE_NAME` | `valheim-server` | Valheim GCE instance name to control |
+| `LAVALINK_ZONE` | `us-central1-a` | Where the Lavalink VM lives |
+| `LAVALINK_INSTANCE_NAME` | `lavalink-server` | Lavalink GCE instance name to control |
+| `LAVALINK_HOST` | _(auto-resolve)_ | Lavalink host. Empty = resolve VM public IP at runtime; set explicitly for local dev. |
+| `LAVALINK_PORT` | `2333` | Lavalink REST/WS port |
+| `MUSIC_COMMAND_CHANNEL_ID` | _(unset)_ | Channel where `/music *` is allowed (defaults to denied if unset) |
 | `DISCORD_SECRET_PATH` | _(auto-built)_ | Full GSM resource path of the Discord secret. Set by Terraform on the Cloud Run service. Locally, the bot constructs `projects/<GCP_PROJECT_ID>/secrets/discord-bot-secrets/versions/latest` if unset. |
 | `DISCORD_TOKEN` | _(unset)_ | Local-dev fallback when GSM is unreachable |
+| `LAVALINK_PASSWORD` | _(unset)_ | Local-dev fallback when GSM is unreachable; production reads `lavalink-server-password` from GSM |
 | `HOST` / `PORT` | `0.0.0.0` / `8080` | Cloud Run sets `PORT` |
 | `LOG_LEVEL` / `LOG_FORMAT` | `INFO` / `json` | `console` for local dev |
 
@@ -136,12 +146,18 @@ Dot-notation flat keys (`"mr-swede.token": "..."`) are also accepted for backwar
 | Command | What it does |
 |---|---|
 | `/ping` | Latency check |
-| `/info` | Bot version + command list |
+| `/info` | Bot version + per-feature command list |
 | `/valheim status` | Reports VM state, PlayFab join code, server password, and player count |
-| `/valheim start` | Starts the GCE VM (idempotent — safe if already running) |
-| `/valheim stop` | Stops the GCE VM (idempotent) |
+| `/valheim start` | Starts the Valheim GCE VM (idempotent — safe if already running) |
+| `/valheim stop` | Stops the Valheim GCE VM (idempotent) |
+| `/music play <query>` | Auto-starts the Lavalink VM, joins your VC, plays a YouTube/SoundCloud/HTTP query |
+| `/music skip` / `pause` / `resume` / `stop` | Playback control (`stop` clears queue + leaves) |
+| `/music queue` / `nowplaying` | Inspect what's playing |
+| `/music volume <0-100>` / `shuffle` / `loop <off\|track\|queue>` | Tune playback |
 
 The `/valheim` commands call into `src.services.compute` (start/stop/describe via `google-cloud-compute`) and `src.services.server_query` (HTTP fetch of `/status.json` from the VM's log-scraping daemon at `server/scripts/status-server.py`).
+
+The `/music` commands call into `src.services.music` (Wavelink wrapper around Lavalink) plus `src.services.compute` for the auto-start. They're gated by `src.utils.checks.requires_channel("music_command_channel_id")`, which is a thin `app_commands.check` that compares `interaction.channel_id` against `settings.music_command_channel_id`. The bot joins whichever voice channel the invoking user is currently in.
 
 ---
 
@@ -150,7 +166,8 @@ The `/valheim` commands call into `src.services.compute` (start/stop/describe vi
 | Category | Tech |
 |---|---|
 | Runtime | Python 3.12 |
-| Bot framework | discord.py 2.x (slash commands only) |
+| Bot framework | discord.py[voice] 2.x (slash commands only; PyNaCl for voice) |
+| Music client | Wavelink 3.5.x → Lavalink 4.2.x (Java, on a separate GCE VM) |
 | HTTP | FastAPI + uvicorn (Cloud Run health checks) |
 | Cloud | Google Cloud Run + Secret Manager + Compute Engine |
 | Config | Pydantic Settings |
