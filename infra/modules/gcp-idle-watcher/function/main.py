@@ -111,20 +111,39 @@ def _probe_valheim(public_ip: str) -> bool | None:
 
 
 def _probe_lavalink(public_ip: str) -> bool | None:
-    """Hit Lavalink's REST /v4/players. Active = at least one player."""
-    url = f"http://{public_ip}:{LAVALINK_PORT}/v4/players"
+    """Hit Lavalink's REST /v4/stats. Active = playingPlayers > 0.
+
+    NOT /v4/players -- that endpoint requires a sessionId path
+    parameter (`/v4/sessions/{id}/players`), and the watcher has no
+    session of its own. /v4/stats is session-less and includes a
+    `playingPlayers` field that aggregates across all sessions. This
+    is what we want: it's the canonical "are any players streaming
+    audio right now" signal.
+
+    Original 2026-04-29 implementation hit /v4/players directly and
+    got 404 every tick, which the watcher (correctly) treated as
+    'unknown' and never incremented the counter on. The bug
+    surfaced as 'lavalink VM never auto-stops' rather than a stop-
+    storm; fixed here so the lavalink target actually works.
+    """
+    url = f"http://{public_ip}:{LAVALINK_PORT}/v4/stats"
     req = urllib.request.Request(url, headers={"Authorization": _lavalink_password()})
     try:
         with urllib.request.urlopen(req, timeout=PROBE_TIMEOUT_SECONDS) as resp:  # noqa: S310 -- http allowed; auth via header
             data = json.load(resp)
     except (urllib.error.URLError, OSError, json.JSONDecodeError) as exc:
-        logger.warning("lavalink players fetch failed (%s): %r", url, exc)
+        logger.warning("lavalink stats fetch failed (%s): %r", url, exc)
         return None
 
-    if not isinstance(data, list):
-        logger.warning("lavalink /v4/players returned non-list: %r", type(data))
+    if not isinstance(data, dict):
+        logger.warning("lavalink /v4/stats returned non-dict: %r", type(data))
         return None
-    return len(data) > 0
+    try:
+        playing = int(data.get("playingPlayers", 0))
+    except (TypeError, ValueError) as exc:
+        logger.warning("lavalink playingPlayers not parseable: %r", exc)
+        return None
+    return playing > 0
 
 
 # ---------------------------------------------------------------------------

@@ -48,9 +48,9 @@ variable "polling_schedule" {
 }
 
 variable "empty_checks_to_stop" {
-  description = "Number of consecutive A2S checks reporting 0 players required before the watcher issues instances.stop. Bumping this slows down stop reactivity but is robust to transient A2S blips."
+  description = "Number of consecutive empty probes required before the watcher issues instances.stop. With the default 30-min schedule and N=4, the effective idle window is 90-120 min. Bumping this from the original 2 was triggered by a 2026-05-02 incident where the Valheim status daemon's log-tail truncation caused two consecutive false-empty readings mid-session, stopping the VM with 3 active players. The daemon bug is fixed (server/scripts/status-server.py now follows logs incrementally), but a higher empty-checks threshold gives us defense-in-depth: any single false-empty event from a future regression survives one extra cycle before triggering a stop."
   type        = number
-  default     = 2
+  default     = 4
 }
 
 variable "status_http_timeout_seconds" {
