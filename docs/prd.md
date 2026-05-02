@@ -1,7 +1,7 @@
 # Mr. Swede — Product Requirements & Architecture
 
 **Status**: living document. Updated when significant decisions land.
-**Last revised**: 2026-04-30
+**Last revised**: 2026-05-02
 **Owners**: jonlee-dev
 
 This document describes what Mr. Swede *is*, what it *does*, what it *will do*, and the architectural rules that keep adding features cheap. It is the source of truth when an existing doc and this PRD disagree.
@@ -410,6 +410,10 @@ Decisions captured here so future-us doesn't re-litigate.
 | 2026-04-30 | **lavasrc Spotify source disabled by default; gated on `LAVASRC_SPOTIFY_ENABLED` from fetch-secrets** | Lavalink VM should boot fine even when the Spotify secret has no versions yet (fresh apply, user hasn't registered Dev App). YouTube/HTTP queries keep working; Spotify URLs error cleanly. Removes a "first apply bricks the bot" footgun. |
 | 2026-04-30 | **Single `play()` returning `PlayResult` discriminated union, not separate `play_track`/`play_playlist`** | Cog branches on `playlist_title is not None`; one function, one shape, easier cog tests, easier to evolve when we add e.g. live-stream URL handling. |
 | 2026-04-30 | **Fail-clean (don't fall back to YouTube search) when a Spotify URL fails to resolve** | Falling back would silently play a wrong track. Better to surface the failure so the user can fix the URL or seed credentials. |
+| 2026-05-02 | **Status daemon switched from periodic re-tail to follow-stream** | The `--tail 500` model lost track of player_count after ~15-30 min of quiet play (the most-recent "now N player(s)" line scrolled off). Watcher then false-stopped a live session. New design opens one long-lived `docker compose logs --follow`, ingests line-by-line, and persists state across reconnects. Side benefit: ~10× lower CPU than re-spawning the subprocess every 30s. |
+| 2026-05-02 | **`empty_checks_to_stop` bumped 2 → 4** | Defense-in-depth against future regressions in any probe. With 30-min cron, idle window is 90-120 min. The daemon bug is fixed but the buffer is cheap insurance. Applied uniformly to Valheim and Lavalink targets; if Lavalink's window ever needs to be tighter, split into per-target variables. |
+| 2026-05-02 | **Lavalink probe URL: `/v4/players` → `/v4/stats`** | The original endpoint requires a sessionId (`/v4/sessions/{id}/players`), and the watcher has no session of its own — every tick 404'd silently. The watcher correctly treats 404 as 'unknown' so the bug surfaced as 'lavalink VM never auto-stops' rather than a stop-storm. `/v4/stats.playingPlayers` is the canonical session-less aggregate. |
+| 2026-05-02 | **Crossplay disabled (`CROSSPLAY=false`)** | Players reported intermittent ~20s lag spikes mid-session. Container logs traced to PlayFab relay reconnects (`code 4098: invalid handle` + ResetParty/JoinParty cycle, with the relay edge at `*.cloudapp.azure.com` in Microsoft's Azure North-Central-US). Direct Steam P2P removes the middlebox. Trade-off: no Xbox/Game Pass crossplay; friend group is Steam-only so trade-off is free. World saves unaffected — `.db`/`.fwl` format is identical between modes. Players now connect via Valheim → Join Game → Join IP → `<public_ip>:2456`. |
 
 ---
 

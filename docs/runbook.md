@@ -48,7 +48,10 @@ gsutil cat gs://${PROJECT_ID}-idle-watcher-state/state-lavalink.json
 1. Confirm the VM is `RUNNING` (`gcloud compute instances describe $INSTANCE --zone $ZONE`).
 2. Check that the firewall rule `valheim-allow-game-udp` exists and targets the `valheim-server` tag (`gcloud compute firewall-rules describe valheim-allow-game-udp`).
 3. SSH via IAP and confirm the container is up: `sudo docker ps`.
-4. The PlayFab join code is printed by the server in its log — `docker compose logs | grep -i 'join code'`. If absent, `SERVER_PUBLIC` or `CROSSPLAY` may have been disabled.
+4. **Connection method depends on the `CROSSPLAY` setting**:
+   - `CROSSPLAY=false` (current default; Steam-only): players join via **Valheim → Join Game → Join IP** → `<public_ip>:2456`. There is no PlayFab join code; do not look for one. Confirm the server is registered with Steam: `docker compose logs | grep -E "Opened Steam server|Game server connected"`.
+   - `CROSSPLAY=true`: players join via the 6-digit PlayFab code from `docker compose logs | grep -i 'join code'`.
+5. If players see "Server not found" via direct IP, check that the VM's public IP hasn't changed since the last `/valheim status` (ephemeral IPs rotate on stop/start). Use the IP from the most recent `/valheim status` output.
 
 ### 3. startup-script failed on first boot
 
@@ -175,7 +178,71 @@ shapes; check both:
    If the secret was seeded AFTER Lavalink started, it won't pick up
    the change. Reset the VM.
 
-### 11. Music plays silently / bot joins VC but no audio
+### 11. Players experiencing 10-30s lag spikes mid-session ("rubber-banding")
+
+If `CROSSPLAY=true`, the most likely cause is a **PlayFab relay reconnect**.
+Check container logs for:
+
+```bash
+sudo docker logs valheim 2>&1 | grep -iE "PlayFab|cloudapp.azure.com|ZRpc timeout|ResetParty"
+```
+
+The pattern is:
+```
+PlayFab network error ... code '4098': the operation was called with an invalid handle
+Player connection lost server "...", now N player(s)
+ResetParty / LeaveNetworkTask / CleanPartyTask / InitPartyTask / JoinPartyTask
+Joined PlayFab Party network with ID "..."
+```
+
+That's PlayFab's Azure-hosted relay invalidating the session and the
+server having to re-establish. ~15-25s of degraded gameplay each time.
+**Not solvable on our side** — it's Microsoft's relay infrastructure.
+
+Mitigation: disable crossplay (per the 2026-05-02 PRD decision). If the
+friend group is Steam-only, this is a free win. To re-enable crossplay
+later, flip `CROSSPLAY` back to `"true"` in `server/docker-compose.yml`,
+`terraform apply`, and bounce the container with `docker compose down +
+up` (which preserves world saves but recreates the container — costs
+one re-download of the Valheim binary from Steam).
+
+If `CROSSPLAY=false` and lag is still happening: the cause is somewhere
+between the player's ISP and GCP us-central1. Have the affected player
+run `mtr -uw -P 2456 <server_ip>` from their machine and look for
+packet-loss hops. There's nothing we can fix server-side beyond moving
+regions.
+
+### 12. Idle watcher stopped the server with active players on it
+
+**This bug was fixed on 2026-05-02 but the symptom is documented for
+posterity.** Old daemon used `docker compose logs --tail 500` every 30s
+and re-derived state from scratch, which lost track of `player_count`
+after ~15-30 min of quiet gameplay (the most recent "now N player(s)"
+line scrolled past 500 entries). The watcher would then read 0 players
+for two consecutive ticks and stop the VM mid-session.
+
+If this somehow recurs:
+
+1. Confirm the daemon is running the **follow-stream** version:
+   ```bash
+   sudo journalctl -u valheim-status --no-pager -n 5
+   ```
+   Look for `docker compose logs --follow attached (pid=...)`. If you
+   see periodic `scrape ok:` lines instead, the old daemon is somehow
+   still running — re-apply the startup-script (`sudo systemctl restart
+   google-startup-scripts.service`) or hot-install per
+   `server/scripts/status-server.py`.
+
+2. Check the live `/status.json`:
+   ```bash
+   curl -sS http://localhost:9001/status.json
+   ```
+   Should report current `player_count` and `stream_alive: true`.
+
+3. Watcher's `empty_checks_to_stop` is now 4 (was 2) — defense in
+   depth. Tunable via the `gcp-idle-watcher` module's variable.
+
+### 13. Music plays silently / bot joins VC but no audio
 
 Almost always a Discord-voice-protocol-versions mismatch. Known good combo:
 
