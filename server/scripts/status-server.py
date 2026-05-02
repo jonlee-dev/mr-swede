@@ -127,10 +127,18 @@ def _ingest_line(line: str) -> None:
             _state["server_running"] = True
         if SERVER_DOWN_RE.search(line):
             _state["server_running"] = False
-            # Server going down implies no players. Without this, a
-            # reset between sessions would carry the last known
-            # player count forward, which would mislead the watcher.
+            # Server going down implies no players AND no live join
+            # code. Without these resets, a session boundary in the
+            # log tail would carry stale values forward:
+            #
+            #   - player_count -> would mislead the idle-watcher into
+            #     thinking the freshly-booted server already has people
+            #   - join_code -> would surface a defunct PlayFab code in
+            #     /valheim status; particularly bad after a crossplay
+            #     toggle because the new server never emits a fresh
+            #     "registered with join code" line to overwrite it
             _state["player_count"] = 0
+            _state["join_code"] = None
         _state["last_update"] = _now_iso()
 
 

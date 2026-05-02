@@ -35,7 +35,22 @@ services:
       - /etc/valheim/secret.env
     environment:
       SERVER_PUBLIC: "true"
-      CROSSPLAY: "true"
+      # Crossplay disabled. Reason captured here because TF applies hide
+      # the "why" once the diff scrolls off:
+      #
+      # PlayFab's relay (the crossplay backbone) routes traffic through
+      # Microsoft's Azure North-Central-US edge (visible in the server's
+      # log lines as `*.cloudapp.azure.com`). When the relay session
+      # invalidates (PlayFab code 4098), the server does a full
+      # ResetParty -> Leave -> Clean -> Init -> JoinParty cycle which
+      # takes ~20s and stalls all players. Direct Steam P2P has no such
+      # middlebox; we accept the loss of Xbox/Game Pass crossplay (none
+      # of our friend group uses those) in exchange for stable latency.
+      #
+      # Flip back to "true" if a non-Steam client ever needs to join.
+      # Saves are unaffected -- the .db/.fwl world file format is
+      # identical between modes.
+      CROSSPLAY: "false"
       BACKUPS_CRON: "0 */2 * * *"
       BACKUPS_MAX_AGE: "3"
       BACKUPS_DIRECTORY: /config/backups
