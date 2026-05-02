@@ -55,7 +55,16 @@ def build_status_embed(
 
     if live is not None and live.server_running:
         if live.join_code:
+            # PlayFab/crossplay path: 6-digit code in Valheim's "Join Game" tab.
             embed.add_field(name="Join code", value=f"`{live.join_code}`", inline=True)
+        else:
+            # Steam-only path (CROSSPLAY=false): no join code exists.
+            # Surface the menu path so first-time joiners aren't lost.
+            embed.add_field(
+                name="How to join",
+                value="Valheim → **Join Game** → **Join IP** → paste the address above",
+                inline=False,
+            )
         embed.add_field(name="Players", value=str(live.player_count), inline=True)
         if password:
             embed.add_field(name="Password", value=f"`{password}`", inline=True)

@@ -75,6 +75,27 @@ class TestBuildStatusEmbed:
         assert "3" in text  # player count
         assert "hunter2" in text  # password
 
+    def test_running_steam_only_no_join_code(self):
+        # CROSSPLAY=false path: server is up but the daemon's
+        # join_code is null because the server doesn't register with
+        # PlayFab. Embed should fall back to a "How to join" field
+        # that walks the user to Valheim's Join IP menu.
+        embed = build_status_embed(
+            _state(status="RUNNING"),
+            _live(player_count=2, join_code=None),
+            password="hunter2",
+        )
+        text = (embed.title or "") + " ".join(f.value for f in embed.fields)
+        names = [f.name for f in embed.fields]
+        assert "RUNNING" in text
+        assert "1.2.3.4" in text
+        assert "Join code" not in names
+        assert "How to join" in names
+        # The hint should reference the Join IP path explicitly so
+        # first-time joiners aren't searching the UI.
+        join_hint = next(f.value for f in embed.fields if f.name == "How to join")
+        assert "Join IP" in join_hint
+
     def test_running_but_status_unreachable(self):
         embed = build_status_embed(_state(status="RUNNING"), live=None, password=None)
         text = (embed.title or "") + " ".join(f.value for f in embed.fields)
