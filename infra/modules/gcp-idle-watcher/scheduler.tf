@@ -18,10 +18,16 @@ resource "google_cloud_scheduler_job" "watcher" {
   project          = var.project_id
   region           = var.region
   name             = "valheim-idle-watcher-tick"
-  description      = "Periodic tick that fires the Valheim idle-watcher function (every ${var.polling_schedule})."
+  description      = "Periodic tick that fires the multi-target idle-watcher function (every ${var.polling_schedule})."
   schedule         = var.polling_schedule
   time_zone        = "Etc/UTC"
   attempt_deadline = "${var.function_timeout_seconds}s"
+
+  # When paused=true, the job stops firing ticks. The function and all
+  # its plumbing stay deployed -- only the cron is silenced. Toggle
+  # via the `paused` module variable. See the variable's description
+  # in variables.tf for the cost trade-off.
+  paused = var.paused
 
   retry_config {
     retry_count = 0

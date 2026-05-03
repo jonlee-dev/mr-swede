@@ -212,7 +212,50 @@ run `mtr -uw -P 2456 <server_ip>` from their machine and look for
 packet-loss hops. There's nothing we can fix server-side beyond moving
 regions.
 
-### 12. Idle watcher stopped the server with active players on it
+### 12a. Emergency: pause the idle watcher entirely
+
+If the watcher is misbehaving and you need to stop it from making any
+more decisions while you investigate, you have two options.
+
+**Preferred: TF-managed pause.** Flip the variable, apply, done:
+
+```bash
+# in infra/envs/prod/terraform.tfvars
+idle_watcher_paused = true
+
+cd infra/envs/prod
+terraform apply -target=module.idle_watcher
+```
+
+The Cloud Scheduler job goes to `state=PAUSED`. Function stays
+deployed (no destroy churn, no rebuild on re-enable). Verify:
+
+```bash
+gcloud scheduler jobs describe valheim-idle-watcher-tick \
+  --location=us-central1 --format='value(state)'
+# expect: PAUSED
+```
+
+**While paused, on-demand VMs stay up until manually stopped** via
+`/valheim stop` / `/music stop` or `gcloud compute instances stop`.
+Plan for ~$2/day of additional idle billing if you forget.
+
+Re-enable: flip `idle_watcher_paused = false` in `terraform.tfvars`,
+`terraform apply`, verify scheduler state goes back to `ENABLED`.
+
+**Stopgap (not version-controlled): direct gcloud pause.** Useful in
+the moment when terraform isn't handy:
+
+```bash
+gcloud scheduler jobs pause valheim-idle-watcher-tick --location=us-central1
+# resume with: gcloud scheduler jobs resume ...
+```
+
+This will create TF state drift on the next plan -- subsequent
+applies will try to set `paused=false` (the default in code). To
+make it survive plans, set the tfvar instead.
+
+### 12b. Idle watcher stopped the server with active players on it
 
 **The 2026-05-02 daemon-truncation bug AND the 2026-05-03 follow-stream
 fragility bug are both fixed in the A2S-based daemon shipped 2026-05-03.

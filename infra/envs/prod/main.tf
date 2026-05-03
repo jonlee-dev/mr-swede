@@ -75,6 +75,11 @@ module "idle_watcher" {
   lavalink_password_secret_id = module.lavalink_vm.server_password_secret_id
   vm_controller_role_id       = module.bot_runtime.vm_controller_role_id
 
+  # Emergency off-switch: when true, the Cloud Scheduler job is paused
+  # and no ticks fire. Use this when a probe regression has the watcher
+  # false-stopping live sessions and we need time to investigate.
+  paused = var.idle_watcher_paused
+
   # bootstrap enables cloudfunctions/cloudscheduler/eventarc/pubsub APIs
   # that this module consumes; bot_runtime owns the custom role we bind
   # to; lavalink_vm provides the second target.
