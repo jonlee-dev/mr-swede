@@ -51,10 +51,51 @@ services:
       # Saves are unaffected -- the .db/.fwl world file format is
       # identical between modes.
       CROSSPLAY: "false"
+
+      # BepInEx + mods. lloesche's image auto-installs the BepInEx pack
+      # itself when this is true; we drop additional mod .dlls under
+      # /config/bepinex/{plugins,patchers} via a oneshot systemd unit
+      # (install-mods.service) that runs before this container starts.
+      # See server/scripts/install-mods.sh for what gets installed.
+      BEPINEX: "true"
+
+      # World modifiers (Valheim CLI flag -modifier <name> <value>).
+      # `portals casual` lets metals (copper, tin, iron, silver, black
+      # metal) travel through portals -- removes the original-game
+      # restriction. Other modifiers can be added space-separated:
+      #   "-modifier portals casual -modifier resources more"
+      SERVER_ARGS: "-modifier portals casual"
+
       BACKUPS_CRON: "0 */2 * * *"
       BACKUPS_MAX_AGE: "3"
       BACKUPS_DIRECTORY: /config/backups
-      UPDATE_CRON: "0 5 * * *"
+
+      # Auto-update of the Valheim binary is DISABLED so a Valheim
+      # patch can't break the BepInEx mods we install. The mod authors
+      # typically take 1-3 days to ship a compatibility update; keeping
+      # the binary pinned avoids a "server won't boot, players angry"
+      # window. To take a Valheim update: SSH in, `docker compose down`,
+      # re-enable the cron temporarily OR run `steamcmd app_update 896660
+      # validate` directly inside the container, then `up` again.
+      UPDATE_CRON: ""
+
       RESTART_IF_IDLE_FOR: "" # idle policy lives in the bot, not the container
     volumes:
       - /opt/valheim/data:/config
+      # NOTE on BepInEx patchers: lloesche's image only auto-syncs
+      # /config/bepinex/plugins/ to the active BepInEx dir; it does
+      # NOT sync /config/bepinex/patchers/. We tried bind-mounting our
+      # host patchers dir into the container's active patchers path
+      # but lloesche's `merge_mod` does an atomic `mv bepinex.tmp
+      # bepinex` which orphans the bind mount (the new bepinex/ has
+      # no mount, the .old/ retains it). PlanBuild requires the
+      # HookGenPatcher patcher and its server-side marketplace
+      # depends on it loading; without that we run with PlanBuild's
+      # plugin partially loaded and Jotunn handling RPC bridging.
+      #
+      # Operational decision (2026-05-03): accept the limitation.
+      # Friend group is small, blueprints work fine client-side,
+      # and the marketplace is non-essential. install-mods.sh still
+      # downloads HookGenPatcher (it's a documented PlanBuild dep)
+      # so if we ever switch to a custom Dockerfile that wires
+      # patchers in correctly, no other change is needed.

@@ -1,7 +1,13 @@
 [Unit]
 Description=Valheim dedicated server (docker compose)
-Requires=docker.service network-online.target valheim-fetch-secrets.service
-After=docker.service network-online.target valheim-fetch-secrets.service
+# install-mods.service is a oneshot that drops mod .dlls into
+# /opt/valheim/data/bepinex/{plugins,patchers} BEFORE this unit runs.
+# Without the dependency the container would boot with an empty mods
+# directory on first run; lloesche's image only copies plugins on its
+# OWN startup, so mods that arrive after `docker compose up` wouldn't
+# be loaded until the next container restart.
+Requires=docker.service network-online.target valheim-fetch-secrets.service install-mods.service
+After=docker.service network-online.target valheim-fetch-secrets.service install-mods.service
 
 [Service]
 Type=simple

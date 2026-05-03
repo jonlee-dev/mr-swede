@@ -1,0 +1,24 @@
+[Unit]
+Description=Install BepInEx mods for Valheim
+# network-online.target ensures the curl downloads from Thunderstore
+# can reach the internet. We don't depend on valheim-fetch-secrets
+# (mods don't need secrets) but we DO want install-mods to complete
+# before valheim.service starts -- valheim.service has
+# Requires=install-mods.service + After=install-mods.service so the
+# container boots with mods already on the persistent disk.
+Requires=network-online.target
+After=network-online.target
+Before=valheim.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/valheim/scripts/install-mods.sh
+RemainAfterExit=true
+StandardOutput=journal
+StandardError=journal
+# Mods that Thunderstore is slow to serve shouldn't hang boot forever.
+# 2 minutes is generous -- typical download is <10 seconds for a few MB.
+TimeoutStartSec=120
+
+[Install]
+WantedBy=multi-user.target

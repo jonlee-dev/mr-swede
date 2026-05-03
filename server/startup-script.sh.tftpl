@@ -57,6 +57,15 @@ fi
 
 systemctl enable --now docker
 
+# 1b. Ensure other tools we rely on are present. Kept OUTSIDE the
+#     docker-install guard so it runs on already-bootstrapped VMs too
+#     (e.g., when we add a new tool dependency without a fresh VM).
+#     `apt install` is idempotent -- already-installed packages are no-ops.
+if ! command -v unzip >/dev/null 2>&1; then
+  echo "unzip missing; installing."
+  DEBIAN_FRONTEND=noninteractive apt-get install -y unzip
+fi
+
 # 2. Drop runtime artifacts. Overwrite every boot so a TF template edit
 #    that flows through metadata reaches disk after the next reboot.
 mkdir -p /opt/valheim /opt/valheim/scripts /opt/valheim/data /etc/valheim
@@ -90,6 +99,20 @@ base64 -d > /etc/systemd/system/valheim-status.service <<'__VALHEIM_BLOB_EOF__'
 ${base64encode(valheim_status_service)}
 __VALHEIM_BLOB_EOF__
 chmod 0644 /etc/systemd/system/valheim-status.service
+
+# Install-mods: oneshot that downloads BepInEx mods from Thunderstore
+# into /opt/valheim/data/bepinex/{plugins,patchers}. Runs BEFORE
+# valheim.service so mods are on disk by the time docker compose up
+# mounts /opt/valheim/data into the container at /config.
+base64 -d > /opt/valheim/scripts/install-mods.sh <<'__VALHEIM_BLOB_EOF__'
+${base64encode(install_mods_sh)}
+__VALHEIM_BLOB_EOF__
+chmod 0750 /opt/valheim/scripts/install-mods.sh
+
+base64 -d > /etc/systemd/system/install-mods.service <<'__VALHEIM_BLOB_EOF__'
+${base64encode(install_mods_service)}
+__VALHEIM_BLOB_EOF__
+chmod 0644 /etc/systemd/system/install-mods.service
 
 # world.env: plain text since templatefile already substituted the values.
 # Single-quoted heredoc so bash doesn't try to re-expand anything (the
@@ -125,8 +148,13 @@ chown -R 1000:1000 /opt/valheim/data
 # written unit files and apply any changes (compose recreate via
 # valheim.service ExecStartPre, etc.).
 systemctl daemon-reload
-systemctl enable valheim-fetch-secrets.service valheim.service valheim-status.service
+systemctl enable valheim-fetch-secrets.service install-mods.service valheim.service valheim-status.service
 systemctl restart valheim-fetch-secrets.service
+# install-mods is a Requires= dep of valheim.service, so restarting
+# valheim transitively starts install-mods first. Restart it
+# explicitly anyway so a mods-version bump in install-mods.sh
+# propagates immediately rather than waiting for the next boot.
+systemctl restart install-mods.service
 systemctl restart valheim.service
 systemctl restart valheim-status.service
 
