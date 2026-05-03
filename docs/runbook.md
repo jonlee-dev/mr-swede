@@ -43,6 +43,53 @@ gsutil cat gs://${PROJECT_ID}-idle-watcher-state/state-lavalink.json
 2. If image build fails: reproduce locally with `cd bot && docker build .`.
 3. If Cloud Run rollout fails: inspect the failing revision's logs in Cloud Run.
 
+### 1.5 Boot disk full / `df` shows 100% / Docker `prune` reclaims 0B
+
+Symptom seen 2026-05-03: `scp` to `/tmp/...` writes a sparse null-filled
+file when the disk is full, corrupting whatever you copy onto it (e.g.,
+`docker-compose.yml` becoming nulls and breaking the next compose up).
+
+```bash
+df -h /
+# /dev/sda1   9.7G   9.5G    0  100%  /
+```
+
+Cause: the boot disk is 10 GB by default (`boot_disk_size_gb=10` in
+`gcp-valheim-vm` module). Each `docker compose down + up` cycle (which
+the Valheim VM does on every metadata change applied through a TF
+edit) creates a new container layer; orphaned old layers accumulate.
+The Valheim binary itself plus BepInExPack + Jotunn + PlanBuild push
+the active container to ~5.5 GB on its own.
+
+**Immediate fix:**
+
+```bash
+# Stop + remove the container (frees the writable layer)
+sudo docker stop valheim
+sudo docker rm valheim
+sudo docker image prune -af
+df -h /   # verify recovered space
+
+# Restore docker-compose.yml from git if it was corrupted by a sparse
+# write during the disk-full window
+gcloud compute scp \
+  /path/to/repo/server/docker-compose.yml \
+  valheim-server:/tmp/docker-compose.yml \
+  --tunnel-through-iap --zone=us-central1-a
+sudo cp /tmp/docker-compose.yml /opt/valheim/docker-compose.yml
+sudo docker compose -f /opt/valheim/docker-compose.yml up -d
+```
+
+**Permanent fix (queued as follow-up):** bump
+`boot_disk_size_gb` to 20 or 30 in `gcp-valheim-vm/variables.tf` AND
+resize the live disk via `gcloud compute disks resize valheim-server
+--size=30GB --zone=us-central1-a`, then `growpart` + `resize2fs`
+inside the VM. The TF change alone would require VM recreation
+(initialize_params.size is a force-replace field), so do the live
+resize first, then update TF to match (adding `lifecycle {
+ignore_changes = [boot_disk[0].initialize_params[0].size] }` if TF
+plan keeps wanting to recreate).
+
 ### 2. Valheim VM is up but no one can connect
 
 1. Confirm the VM is `RUNNING` (`gcloud compute instances describe $INSTANCE --zone $ZONE`).
@@ -102,6 +149,71 @@ nuke it. Recovery has three increasingly drastic steps:
 1. `df -h` and `du -h --max-depth=1 /opt/valheim/data`.
 2. Trim auto-backups: `BACKUPS_MAX_AGE` in `docker-compose.yml` defaults to 3 days; lower it temporarily.
 3. If still full, expand the disk in Terraform (`data_disk_size_gb`), `terraform apply`, then on the VM: `sudo resize2fs /dev/disk/by-id/google-valheim-data`.
+
+### 6.5 BepInEx mods aren't loading / "Could not load file or assembly 'MMHOOK_assembly_valheim'"
+
+Expected behavior **as of 2026-05-03**: this error appears in the
+container logs and is a known limitation. lloesche's image only
+auto-syncs `/config/bepinex/plugins/` to the active BepInEx dir; it
+does NOT sync `/config/bepinex/patchers/`. PlanBuild's HookGenPatcher
+patcher therefore doesn't load, and PlanBuild's `Awake()` throws.
+
+What still works (the "Option A" trade-off accepted in PRD §8 decision
+log):
+  - BepInEx loads
+  - Jotunn loads (registers PlanBuild's RPCs)
+  - PlanBuild plugin file present; basic blueprint sync may work
+    via Jotunn's RPC bridge
+  - Friends with PlanBuild installed locally can place planned
+    pieces and use the blueprint rune
+  - Server-side **marketplace** feature does NOT work
+
+If a friend reports "PlanBuild isn't working":
+  1. Confirm they have PlanBuild + Jotunn + HookGenPatcher installed
+     locally via Thunderstore Mod Manager or r2modman (matching the
+     server's pinned versions: 0.18.4 / 2.28.0 / 0.0.4).
+  2. Their client has BepInExPack auto-installed by the mod manager.
+  3. Server doesn't gate connections on PlanBuild presence; clients
+     without it can still connect (per PlanBuild's design).
+
+If you ever decide to enable server-side marketplace, see PRD §8's
+"Option A" decision for the alternative paths (custom Dockerfile or
+two-boot post-merge hook).
+
+### 6.6 Bumping a mod version
+
+Pinned versions live in `server/scripts/install-mods.sh` as a
+pipe-delimited list:
+
+```bash
+MODS=(
+  "ValheimModding|Jotunn|2.28.0|plugins"
+  "ValheimModding|HookGenPatcher|0.0.4|patchers"
+  "MathiasDecrock|PlanBuild|0.18.4|plugins"
+)
+```
+
+Procedure:
+  1. Edit the version string in install-mods.sh
+  2. `terraform apply -target=module.valheim_vm` (updates VM metadata
+     with new startup-script content)
+  3. SSH to VM. The marker file `.installed-<name>-<old_version>`
+     blocks re-download of the previous version; install-mods.sh
+     wipes any `.installed-<name>-*` marker matching the mod name
+     before downloading, so just re-running the unit picks up the
+     new version:
+     ```
+     sudo systemctl restart install-mods.service
+     ```
+  4. Bounce the container:
+     `sudo docker compose -f /opt/valheim/docker-compose.yml down`
+     `sudo docker compose -f /opt/valheim/docker-compose.yml up -d`
+
+A Valheim binary update may also be required if the mod requires a
+specific game version. The image's `UPDATE_CRON` is empty (PRD §8
+2026-05-03 decision); to update Valheim manually, edit
+`docker-compose.yml`, set `UPDATE_CRON: "0 5 * * *"` temporarily,
+let it run once, then revert.
 
 ### 7. "I want to delete and rebuild the VM"
 
