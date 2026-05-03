@@ -28,9 +28,9 @@ variable "boot_disk_image" {
 }
 
 variable "boot_disk_size_gb" {
-  description = "Ephemeral boot disk size. 10GB fits Debian + Docker images comfortably; world data lives on the data disk."
+  description = "Ephemeral boot disk size. Was 10GB but BepInExPack + Valheim binary + Steam download cache + accumulating Docker layers (each `compose down + up` cycle leaks an old writable layer) push past 10GB easily, especially with mods. 30GB has comfortable headroom. The live disk was resized online via `gcloud compute disks resize` 2026-05-03; this default change keeps fresh-builds in sync."
   type        = number
-  default     = 10
+  default     = 30
 }
 
 variable "data_disk_size_gb" {

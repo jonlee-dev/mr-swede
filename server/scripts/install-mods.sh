@@ -42,7 +42,13 @@ mkdir -p "${PLUGINS_DIR}" "${PATCHERS_DIR}"
 # and re-download.
 MODS=(
   # Modding framework. Plugins (incl. PlanBuild) link against this.
-  "ValheimModding|Jotunn|2.28.0|plugins"
+  # 2026-05-03: bumped 2.28.0 -> 2.29.0 as an experiment. Jotunn 2.29's
+  # Thunderstore manifest dropped the explicit HookGenPatcher dep
+  # (only BepInExPack remains), so PlanBuild's hook-dependent paths
+  # may now resolve without a separately-loaded patcher -- which we
+  # can't load anyway due to lloesche's merge_mod orphaning the
+  # bind mount (see PRD 2026-05-03 decision log).
+  "ValheimModding|Jotunn|2.29.0|plugins"
 
   # MonoMod runtime hook generator. Required by Jotunn for IL patching.
   # Goes in patchers/ (loaded before assembly resolution).
