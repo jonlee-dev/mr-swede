@@ -1,7 +1,7 @@
 # Mr. Swede — Product Requirements & Architecture
 
 **Status**: living document. Updated when significant decisions land.
-**Last revised**: 2026-05-02
+**Last revised**: 2026-05-03
 **Owners**: jonlee-dev
 
 This document describes what Mr. Swede *is*, what it *does*, what it *will do*, and the architectural rules that keep adding features cheap. It is the source of truth when an existing doc and this PRD disagree.
@@ -414,6 +414,7 @@ Decisions captured here so future-us doesn't re-litigate.
 | 2026-05-02 | **`empty_checks_to_stop` bumped 2 → 4** | Defense-in-depth against future regressions in any probe. With 30-min cron, idle window is 90-120 min. The daemon bug is fixed but the buffer is cheap insurance. Applied uniformly to Valheim and Lavalink targets; if Lavalink's window ever needs to be tighter, split into per-target variables. |
 | 2026-05-02 | **Lavalink probe URL: `/v4/players` → `/v4/stats`** | The original endpoint requires a sessionId (`/v4/sessions/{id}/players`), and the watcher has no session of its own — every tick 404'd silently. The watcher correctly treats 404 as 'unknown' so the bug surfaced as 'lavalink VM never auto-stops' rather than a stop-storm. `/v4/stats.playingPlayers` is the canonical session-less aggregate. |
 | 2026-05-02 | **Crossplay disabled (`CROSSPLAY=false`)** | Players reported intermittent ~20s lag spikes mid-session. Container logs traced to PlayFab relay reconnects (`code 4098: invalid handle` + ResetParty/JoinParty cycle, with the relay edge at `*.cloudapp.azure.com` in Microsoft's Azure North-Central-US). Direct Steam P2P removes the middlebox. Trade-off: no Xbox/Game Pass crossplay; friend group is Steam-only so trade-off is free. World saves unaffected — `.db`/`.fwl` format is identical between modes. Players now connect via Valheim → Join Game → Join IP → `<public_ip>:2456`. |
+| 2026-05-03 | **Status daemon switched from log-scraping to Steam A2S query** | Players reported being booted mid-session by the watcher even after the 2026-05-02 follow-stream rewrite. Daemon journal showed `docker compose logs --follow` exiting with code 0 at random — both during the boot race and during normal runtime — losing player events in the 5-second reconnect gaps. Root cause is structural: docker's `--follow` semantics aren't actually a guaranteed continuous stream. The new daemon queries the game itself via Steam's A2S_INFO protocol (UDP localhost:2457). This is the canonical Server Browser query that the dedicated server itself answers; it bypasses log parsing entirely. We previously avoided A2S because crossplay/PlayFab made it unreliable, but with crossplay off (2026-05-02 decision above) the protocol responds correctly — verified against the live server. Implementation is stdlib `socket` + byte-slicing (~30 lines for the protocol; avoids the Debian-12 PEP-668 pip-install plumbing the python-a2s lib would have required). HTTP `/status.json` schema unchanged, so the bot's `services/server_query.py` and the watcher's `_probe_valheim` need zero changes. |
 
 ---
 

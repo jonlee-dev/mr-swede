@@ -1,55 +1,66 @@
 #!/usr/bin/env python3
-"""Log-following status server for the Valheim VM.
+"""Steam A2S query daemon for the Valheim VM.
 
-Tails `docker compose logs --follow` continuously, parses the lloesche
-image's output for join-code + player-count + lifecycle events, and
-serves the result as JSON at GET :9001/status.json.
+Periodically queries the Valheim dedicated server's UDP query port
+(2457 by Valheim convention = game_port + 1) for an A2S_INFO response,
+parses out the live player count, and serves the result as JSON at
+GET :9001/status.json.
 
-Why log-following and not periodic re-scraping?
-    The previous implementation polled `docker compose logs --tail 500`
-    every 30s and re-derived state from scratch each time. That worked
-    when player events were frequent, but lloesche/valheim-server
-    emits a lot of routine traffic (saves, network keepalives, GC
-    events). After ~15-30 min of uneventful play, the most recent
-    "now N player(s)" line scrolled past 500 entries and `player_count`
-    fell back to its initial 0. The idle-watcher then logged two
-    consecutive empty checks and stopped the VM mid-session.
+Why A2S directly and not log scraping?
+    The previous "tail docker compose logs" approach (both the
+    initial polling version AND the 2026-05-02 follow-stream rewrite)
+    repeatedly missed real player events. The follow-stream version
+    in particular suffered from `docker compose logs --follow`
+    exiting with code 0 within 1 second of attaching during VM boot
+    races and at random times during normal runtime. Reconnects took
+    5+ seconds each, and any join/leave events that fired in those
+    gaps were lost. The watcher then false-stopped active sessions.
 
-    The fix is structural: don't re-derive state, MAINTAIN it. We open
-    one long-lived `docker compose logs --follow` stream and update
-    `_state` as new lines arrive. Player count is now sticky: once
-    we've seen the "now N player(s)" event, the value stays in state
-    until another event changes it. Same for join_code and
-    server_running.
+    A2S is the canonical Steam Server Browser query protocol --
+    the game itself answers it, no log parsing involved. Earlier we
+    abandoned A2S because Valheim's crossplay/PlayFab transport made
+    queries unreliable; with `CROSSPLAY=false` (the 2026-05-02 fix
+    for unrelated PlayFab lag) the protocol responds correctly.
+    Verified: a manual A2S_INFO probe to the live server returned a
+    valid response with the correct player count.
 
-Why log scraping at all (vs Steam A2S)?
-    Valheim's crossplay/PlayFab transport replaced legacy Steam A2S as
-    the primary discovery mechanism. The dedicated server still binds
-    a query port (game_port + 1) but in practice it does not respond
-    to standard A2S queries reliably -- both python-a2s and lloesche's
-    built-in STATUS_HTTP feature consistently time out. Log scraping
-    is the canonical fallback the community uses.
+Why stdlib socket and not the python-a2s library?
+    Debian 12's PEP 668 makes system pip installs awkward (would
+    require --break-system-packages or a venv). The A2S_INFO query
+    is ~30 lines of Python with stdlib `socket` and byte-slicing.
+    Reinventing this much wheel is cheaper than the pip-install
+    plumbing in startup-script.
 
-Output schema:
+Output schema (UNCHANGED from prior daemon -- the bot's
+src.services.server_query and the idle-watcher's _probe_valheim
+both consume this format and need no changes):
+
     {
-      "last_update": "<ISO8601 UTC timestamp>",
-      "join_code": "126828" | null,   # PlayFab join code; null until server registers
-      "player_count": <int>,           # 0 until the first "now N player(s)" event
-      "server_running": <bool>,        # tracks "Game server connected" / "OnApplicationQuit"
-      "stream_alive": <bool>,          # was the docker logs stream open at last update
-      "error": "<repr>"                # only present when the stream is currently broken
+      "last_update": "<ISO8601 UTC>",
+      "join_code": null,           # always null now -- A2S doesn't
+                                   # expose PlayFab join codes, and
+                                   # with CROSSPLAY=false there is no
+                                   # PlayFab join code at all. Bot's
+                                   # /valheim status embed has a
+                                   # "How to join" branch for this.
+      "player_count": <int>,
+      "server_running": <bool>,    # true iff the most recent A2S
+                                   # query succeeded
+      "error": "<repr>"            # only present when the most recent
+                                   # query failed; the idle-watcher
+                                   # already treats this as "unknown"
+                                   # and does NOT increment its empty
+                                   # counter, which is the safe path
     }
 
-Stdlib only -- no third-party deps. Runs as the valheim-status systemd
-unit; binds 0.0.0.0:9001.
+Stdlib only. Runs as the valheim-status systemd unit; binds 0.0.0.0:9001.
 """
 
 from __future__ import annotations
 
 import json
 import logging
-import re
-import subprocess
+import socket
 import sys
 import threading
 import time
@@ -64,38 +75,124 @@ logging.basicConfig(
 )
 log = logging.getLogger("valheim-status")
 
-PORT = 9001
-COMPOSE_FILE = "/opt/valheim/docker-compose.yml"
+# ---------------------------------------------------------------------------
+# Tunables
+# ---------------------------------------------------------------------------
 
-# When the daemon (re)starts we backfill state from the recent log
-# tail so /status.json isn't blank during the first few seconds.
-# `--tail all` would be most thorough but on a busy world that's
-# 100k+ lines and we don't need that much history -- the latest of
-# each event is what we care about. 5000 lines covers ~3-4 hours of
-# typical play, more than enough to capture the last "Game server
-# connected" + "now N player(s)" + join-code emissions.
-INITIAL_TAIL = 5000
+HTTP_PORT = 9001
+QUERY_HOST = "127.0.0.1"
+QUERY_PORT = 2457  # Valheim convention: game_port (2456) + 1
+QUERY_INTERVAL_SECONDS = 30
+QUERY_TIMEOUT_SECONDS = 3.0
 
-# When the docker logs stream dies (docker daemon hiccup, container
-# restart, etc.), wait this long before reconnecting. Short enough
-# that brief blips don't leave us blind, long enough to avoid a tight
-# retry loop if docker is genuinely broken.
-RECONNECT_BACKOFF_SECONDS = 5
+# ---------------------------------------------------------------------------
+# Steam A2S protocol -- the bare slice we need.
+#
+# Reference: https://developer.valvesoftware.com/wiki/Server_queries
+#
+# Wire format:
+#   1. Send A2S_INFO_REQUEST (28 bytes).
+#   2. Modern Source servers (since 2020) reply with S2C_CHALLENGE
+#      containing a 4-byte token; resend the request with the token
+#      appended (32 bytes total).
+#   3. The server then replies with S2A_INFO_SRC: 4-byte header,
+#      type byte 'I' (0x49), 1-byte protocol, four null-terminated
+#      strings (server name, map, folder, game), 2-byte short app id,
+#      then the bytes we actually care about: players, max_players,
+#      bots, server_type, environment, visibility, vac, version (NTS),
+#      optional EDF flagged extra fields.
+#
+# We only read up to player_count + max_players. Everything after that
+# is ignored.
+# ---------------------------------------------------------------------------
 
-# Regex patterns sourced from observed `docker compose logs` output of
-# lloesche/valheim-server. If lloesche reformats the log lines we
-# scrape, only these need updating.
-JOIN_CODE_RE = re.compile(r"registered with join code (\d+)")
-PLAYER_COUNT_RE = re.compile(r"now (\d+) player\(s\)")
-SERVER_UP_RE = re.compile(r"Game server connected")
-SERVER_DOWN_RE = re.compile(r"OnApplicationQuit|Server is shutting down")
+_A2S_HEADER = b"\xff\xff\xff\xff"
+_A2S_INFO_QUERY_BODY = b"TSource Engine Query\x00"
+_A2S_INFO_REQUEST = _A2S_HEADER + _A2S_INFO_QUERY_BODY
+_A2S_RESP_TYPE_CHALLENGE = 0x41  # 'A'
+_A2S_RESP_TYPE_INFO = 0x49  # 'I'
 
+
+def _query_a2s_info(
+    host: str, port: int, timeout: float
+) -> tuple[int, int] | None:
+    """Send an A2S_INFO query and return (player_count, max_players).
+
+    Handles the challenge handshake transparently. Returns None on any
+    error (timeout, malformed response, EOF-before-required-fields).
+    Failures are logged at WARNING -- the caller should set error
+    state, not retry, and rely on the next periodic tick.
+    """
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.settimeout(timeout)
+    try:
+        try:
+            sock.sendto(_A2S_INFO_REQUEST, (host, port))
+            data, _ = sock.recvfrom(4096)
+        except (socket.timeout, OSError) as exc:
+            log.warning("A2S send/recv failed (host=%s:%d): %r", host, port, exc)
+            return None
+
+        # If the server responded with a challenge, re-send the query
+        # with the 4-byte challenge token appended.
+        if (
+            len(data) >= 9
+            and data[0:4] == _A2S_HEADER
+            and data[4] == _A2S_RESP_TYPE_CHALLENGE
+        ):
+            challenge = data[5:9]
+            try:
+                sock.sendto(_A2S_INFO_REQUEST + challenge, (host, port))
+                data, _ = sock.recvfrom(4096)
+            except (socket.timeout, OSError) as exc:
+                log.warning("A2S challenge resend failed: %r", exc)
+                return None
+
+        # Expect S2A_INFO_SRC: \xFFx4 + 'I' + ...
+        if len(data) < 6 or data[0:4] != _A2S_HEADER or data[4] != _A2S_RESP_TYPE_INFO:
+            log.warning(
+                "A2S response not S2A_INFO_SRC; first bytes=%s len=%d",
+                data[:8].hex(),
+                len(data),
+            )
+            return None
+
+        # Skip 4-byte header, type byte, protocol byte.
+        pos = 6
+        try:
+            # Four NUL-terminated strings: name, map, folder, game.
+            for _ in range(4):
+                end = data.index(b"\x00", pos)
+                pos = end + 1
+            # 2-byte short app ID, then the byte we want: players.
+            if len(data) < pos + 2 + 2:
+                log.warning("A2S response truncated before player count")
+                return None
+            pos += 2
+            return data[pos], data[pos + 1]
+        except (ValueError, IndexError) as exc:
+            log.warning("A2S response parse error: %r", exc)
+            return None
+    finally:
+        sock.close()
+
+
+# ---------------------------------------------------------------------------
+# Daemon state and query loop
+# ---------------------------------------------------------------------------
+
+# Initial player_count is 0 -- the watcher only stops a VM after N
+# CONSECUTIVE empty reads, AND only when state.error is absent. So
+# even if the daemon serves /status.json before its first query
+# completes, the watcher won't act on it (server_running=false, no
+# error field set initially -- but the watcher also checks error;
+# we set error on the first failure, which makes the unknown-state
+# explicit).
 _state: dict[str, Any] = {
     "last_update": None,
     "join_code": None,
     "player_count": 0,
     "server_running": False,
-    "stream_alive": False,
 }
 _state_lock = threading.Lock()
 
@@ -104,116 +201,40 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _ingest_line(line: str) -> None:
-    """Update `_state` based on a single log line.
+def _query_loop() -> None:
+    """Run an A2S_INFO query every QUERY_INTERVAL_SECONDS forever.
 
-    Each regex match overwrites the corresponding state field; non-
-    matching lines just bump `last_update` so callers can tell the
-    stream is alive. State persists across non-matches -- the whole
-    point of the rewrite is that an absence of player-count events
-    no longer drives player_count back to 0.
-    """
-    with _state_lock:
-        if (m := JOIN_CODE_RE.search(line)) is not None:
-            _state["join_code"] = m.group(1)
-        if (m := PLAYER_COUNT_RE.search(line)) is not None:
-            try:
-                _state["player_count"] = int(m.group(1))
-            except ValueError:
-                # Regex guarantees \d+, but defensive against future
-                # pattern edits that might broaden the capture group.
-                pass
-        if SERVER_UP_RE.search(line):
-            _state["server_running"] = True
-        if SERVER_DOWN_RE.search(line):
-            _state["server_running"] = False
-            # Server going down implies no players AND no live join
-            # code. Without these resets, a session boundary in the
-            # log tail would carry stale values forward:
-            #
-            #   - player_count -> would mislead the idle-watcher into
-            #     thinking the freshly-booted server already has people
-            #   - join_code -> would surface a defunct PlayFab code in
-            #     /valheim status; particularly bad after a crossplay
-            #     toggle because the new server never emits a fresh
-            #     "registered with join code" line to overwrite it
-            _state["player_count"] = 0
-            _state["join_code"] = None
-        _state["last_update"] = _now_iso()
+    On query failure, we set the `error` field and `server_running` to
+    False. We DO NOT reset player_count -- the watcher checks `error`
+    first and treats it as 'unknown' (no counter increment), so a
+    stale player_count value can't drive a false stop. Keeping the
+    last-known player_count means the bot's /valheim status doesn't
+    flap to 0 during transient query blips either.
 
-
-def _follow_loop() -> None:
-    """Run `docker compose logs --follow` forever, ingesting line-by-line.
-
-    The outer loop handles stream death (docker restart, container
-    recreation). On any failure we mark `stream_alive=false`, log the
-    cause, sleep the backoff, then reopen. State is preserved across
-    reconnects -- we never re-init player_count to 0 just because we
-    briefly lost the stream.
-
-    `--tail INITIAL_TAIL` on the first iteration backfills recent
-    history so the daemon's first /status.json isn't blank. On
-    reconnects we use the same tail value: cheap insurance against
-    missing events that occurred during the brief disconnect.
+    On success, we update player_count from the response, clear the
+    error field, and mark server_running True.
     """
     while True:
-        proc: subprocess.Popen[str] | None = None
-        try:
-            proc = subprocess.Popen(
-                [
-                    "docker",
-                    "compose",
-                    "-f",
-                    COMPOSE_FILE,
-                    "logs",
-                    "--follow",
-                    "--tail",
-                    str(INITIAL_TAIL),
-                    "--no-color",
-                ],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                bufsize=1,  # line-buffered
-            )
-        except (OSError, subprocess.SubprocessError) as exc:
-            log.warning("failed to start docker compose logs: %r", exc)
-            with _state_lock:
-                _state["error"] = repr(exc)
-                _state["stream_alive"] = False
-                _state["last_update"] = _now_iso()
-            time.sleep(RECONNECT_BACKOFF_SECONDS)
-            continue
-
+        result = _query_a2s_info(QUERY_HOST, QUERY_PORT, QUERY_TIMEOUT_SECONDS)
         with _state_lock:
-            _state.pop("error", None)
-            _state["stream_alive"] = True
+            if result is None:
+                _state["server_running"] = False
+                # Surface why the query failed so the watcher's error
+                # check fires. The exact reason is in the journal at
+                # WARNING level; the JSON value is just a short tag.
+                _state["error"] = "a2s_query_failed"
+            else:
+                players, _max_players = result
+                _state["player_count"] = int(players)
+                _state["server_running"] = True
+                _state.pop("error", None)
+            _state["last_update"] = _now_iso()
+        time.sleep(QUERY_INTERVAL_SECONDS)
 
-        assert proc.stdout is not None
-        log.info("docker compose logs --follow attached (pid=%s)", proc.pid)
-        try:
-            for raw_line in proc.stdout:
-                _ingest_line(raw_line.rstrip("\n"))
-        except Exception as exc:  # noqa: BLE001 -- broad on purpose; loop must not die
-            log.exception("error reading log stream")
-            with _state_lock:
-                _state["error"] = repr(exc)
-        finally:
-            with _state_lock:
-                _state["stream_alive"] = False
-                _state["last_update"] = _now_iso()
-            try:
-                proc.terminate()
-                proc.wait(timeout=5)
-            except (subprocess.TimeoutExpired, ProcessLookupError):
-                proc.kill()
 
-        log.warning(
-            "docker logs stream ended (exit=%s); reconnecting in %ds",
-            proc.returncode,
-            RECONNECT_BACKOFF_SECONDS,
-        )
-        time.sleep(RECONNECT_BACKOFF_SECONDS)
+# ---------------------------------------------------------------------------
+# HTTP server (unchanged surface from prior daemon).
+# ---------------------------------------------------------------------------
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -232,14 +253,21 @@ class _Handler(BaseHTTPRequestHandler):
         self.wfile.write(payload)
 
     def log_message(self, format: str, *args: Any) -> None:  # noqa: A002,ARG002
-        # Silence default per-request logging; we log scrape events only.
+        # Silence per-request logging; the query loop is what we care
+        # about for ops, and that already logs failures at WARNING.
         return
 
 
 def main() -> None:
-    log.info("Valheim status server starting on :%d", PORT)
-    threading.Thread(target=_follow_loop, daemon=True).start()
-    server = HTTPServer(("0.0.0.0", PORT), _Handler)
+    log.info(
+        "Valheim status server starting (HTTP :%d, A2S target %s:%d, interval %ds)",
+        HTTP_PORT,
+        QUERY_HOST,
+        QUERY_PORT,
+        QUERY_INTERVAL_SECONDS,
+    )
+    threading.Thread(target=_query_loop, daemon=True).start()
+    server = HTTPServer(("0.0.0.0", HTTP_PORT), _Handler)
     server.serve_forever()
 
 

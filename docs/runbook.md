@@ -214,33 +214,72 @@ regions.
 
 ### 12. Idle watcher stopped the server with active players on it
 
-**This bug was fixed on 2026-05-02 but the symptom is documented for
-posterity.** Old daemon used `docker compose logs --tail 500` every 30s
-and re-derived state from scratch, which lost track of `player_count`
-after ~15-30 min of quiet gameplay (the most recent "now N player(s)"
-line scrolled past 500 entries). The watcher would then read 0 players
-for two consecutive ticks and stop the VM mid-session.
+**The 2026-05-02 daemon-truncation bug AND the 2026-05-03 follow-stream
+fragility bug are both fixed in the A2S-based daemon shipped 2026-05-03.
+The symptoms are documented for posterity — read this whole section
+before assuming a recurrence.**
 
-If this somehow recurs:
+History of attempts:
+- **v1 (pre-2026-05-02): `docker compose logs --tail 500` every 30s.**
+  Re-derived state from scratch each scrape. Lost player_count when
+  gameplay was quiet for >15-30 min (the last "now N player(s)" log
+  line scrolled past 500 entries).
+- **v2 (2026-05-02): `docker compose logs --follow`.**
+  Persistent state, ingest line-by-line. Improved on v1 but still
+  hit `stream ended (exit=0)` at random — `--follow` isn't actually
+  a guaranteed continuous stream in docker compose. Events lost in
+  reconnect gaps; players still got false-stopped.
+- **v3 (2026-05-03, current): Steam A2S query to UDP localhost:2457.**
+  Bypasses log parsing. Queries the game itself for player count.
 
-1. Confirm the daemon is running the **follow-stream** version:
+If a stop with active players recurs:
+
+1. Confirm the daemon is the **A2S** version:
    ```bash
    sudo journalctl -u valheim-status --no-pager -n 5
    ```
-   Look for `docker compose logs --follow attached (pid=...)`. If you
-   see periodic `scrape ok:` lines instead, the old daemon is somehow
-   still running — re-apply the startup-script (`sudo systemctl restart
-   google-startup-scripts.service`) or hot-install per
-   `server/scripts/status-server.py`.
+   Look for `Valheim status server starting (HTTP :9001, A2S target
+   127.0.0.1:2457, ...)`. If you see `docker compose logs --follow
+   attached (pid=...)` you're on v2; if you see periodic `scrape ok:`
+   lines you're on v1. Either: hot-install per
+   `server/scripts/status-server.py` and `sudo systemctl restart
+   valheim-status`.
 
 2. Check the live `/status.json`:
    ```bash
    curl -sS http://localhost:9001/status.json
    ```
-   Should report current `player_count` and `stream_alive: true`.
+   Should report current `player_count` and `server_running: true`
+   (or `error: a2s_query_failed` if the game container isn't
+   responsive — that's a separate problem to investigate).
 
-3. Watcher's `empty_checks_to_stop` is now 4 (was 2) — defense in
-   depth. Tunable via the `gcp-idle-watcher` module's variable.
+3. Verify A2S directly (independent of the daemon):
+   ```bash
+   sudo python3 -c "
+   import socket
+   s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.settimeout(3)
+   Q = b'\xff\xff\xff\xffTSource Engine Query\x00'
+   s.sendto(Q, ('127.0.0.1', 2457))
+   d, _ = s.recvfrom(4096)
+   s.sendto(Q + d[5:9], ('127.0.0.1', 2457))
+   d, _ = s.recvfrom(4096)
+   pos = 6
+   for _ in range(4): pos = d.index(b'\x00', pos) + 1
+   print('players=', d[pos+2], 'max=', d[pos+3])"
+   ```
+   The two values should match. If they disagree, the daemon has a
+   bug; file an issue and pin the daemon's player_count to the raw
+   A2S reading.
+
+4. Watcher's `empty_checks_to_stop` is 4 (was 2) — defense in depth
+   for any future regression. Tunable via the `gcp-idle-watcher`
+   module's variable.
+
+5. **The 2026-05-02 PlayFab/crossplay fix is what enabled A2S to
+   work.** If `CROSSPLAY=true` is ever turned back on, A2S queries
+   become unreliable again (PlayFab interferes with the query port)
+   and the daemon will start logging `a2s_query_failed`. Either
+   accept the unreliability or revisit the daemon strategy.
 
 ### 13. Music plays silently / bot joins VC but no audio
 
