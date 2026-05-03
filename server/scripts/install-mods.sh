@@ -113,4 +113,35 @@ done
 # don't need to touch ownership here -- root-owned files at 0644 are
 # readable by the container's user via the chown step.
 
+# ---------------------------------------------------------------------------
+# Plugin config patching.
+#
+# PlanBuild's [Server Settings] default to restrictive (`Allow X =
+# false`) which is sensible for public servers but wrong for our
+# private friend-group server. Flip every Allow X in that section to
+# true here.
+#
+# The .cfg file is created by PlanBuild itself on first plugin load
+# (NOT by lloesche's bootstrap), so on a brand-new VM this script
+# runs before the file exists -- we guard with `[ -f ]` and skip
+# silently. The first container boot creates the file with defaults;
+# the second boot's install-mods run finds the file and flips the
+# values. So a fresh VM needs ONE bounce after first start to pick
+# up these settings. Documented in docs/runbook.md.
+#
+# sed is idempotent: re-running on already-flipped values is a no-op.
+# ---------------------------------------------------------------------------
+
+PLANBUILD_CFG="/opt/valheim/data/bepinex/marcopogo.PlanBuild.cfg"
+if [ -f "${PLANBUILD_CFG}" ]; then
+  echo "[install-mods] patching ${PLANBUILD_CFG} server settings"
+  sed -i \
+    -e 's/^Allow direct build = false$/Allow direct build = true/' \
+    -e 's/^Allow terrain tools = false$/Allow terrain tools = true/' \
+    -e 's/^Allow serverside blueprints = false$/Allow serverside blueprints = true/' \
+    "${PLANBUILD_CFG}"
+else
+  echo "[install-mods] ${PLANBUILD_CFG} not present yet (first-boot expected); skipping config patch"
+fi
+
 echo "[install-mods] all mods installed"

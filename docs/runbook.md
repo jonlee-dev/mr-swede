@@ -180,7 +180,40 @@ If you ever decide to enable server-side marketplace, see PRD §8's
 "Option A" decision for the alternative paths (custom Dockerfile or
 two-boot post-merge hook).
 
-### 6.6 Bumping a mod version
+### 6.6 PlanBuild [Server Settings] configuration
+
+PlanBuild's `marcopogo.PlanBuild.cfg` defaults the `[Server Settings]`
+permission flags to `false` (conservative for public servers). Our
+private friend-group server flips them all to `true`:
+
+```ini
+[Server Settings]
+Allow blueprint rune = true            # default true
+Allow direct build = true              # was false; flipped 2026-05-03
+Allow terrain tools = true             # was false; flipped 2026-05-03
+Allow serverside blueprints = true     # was false; flipped 2026-05-03
+Allow clients to use the GUI toggle key = true  # default true
+```
+
+These flips are encoded in `server/scripts/install-mods.sh` as a `sed`
+patch that runs on every install-mods.service tick. The patch is
+idempotent (re-running on already-flipped values is a no-op).
+
+**Fresh-VM gotcha:** PlanBuild itself creates `marcopogo.PlanBuild.cfg`
+on its first plugin load -- NOT lloesche's bootstrap. On a brand-new
+VM the file doesn't exist when install-mods first runs, so the sed
+patch is skipped (file-not-found guard). The first container boot
+creates the .cfg with defaults; the second boot's install-mods picks
+up the file and flips the values. **A fresh VM therefore needs ONE
+extra container bounce after first boot to apply these settings.**
+
+To override: edit the .cfg directly on the persistent disk
+(`/opt/valheim/data/bepinex/marcopogo.PlanBuild.cfg`). install-mods's
+sed is one-way (false→true) so manually setting any of these to
+`true` survives a re-run; setting to `false` would get clobbered on
+the next install-mods tick.
+
+### 6.7 Bumping a mod version
 
 Pinned versions live in `server/scripts/install-mods.sh` as a
 pipe-delimited list:
