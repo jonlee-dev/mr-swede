@@ -1,7 +1,7 @@
 # Mr. Swede — Product Requirements & Architecture
 
 **Status**: living document. Updated when significant decisions land.
-**Last revised**: 2026-05-03
+**Last revised**: 2026-05-04
 **Owners**: jonlee-dev
 
 This document describes what Mr. Swede *is*, what it *does*, what it *will do*, and the architectural rules that keep adding features cheap. It is the source of truth when an existing doc and this PRD disagree.
@@ -420,6 +420,7 @@ Decisions captured here so future-us doesn't re-litigate.
 | 2026-05-03 | **Disable Valheim auto-update via `UPDATE_CRON=""`** | The lloesche image's daily `0 5 * * *` Valheim update can break BepInEx mods (Valheim assembly version changes invalidate generated hooks; PlanBuild needs ~1-3 days for a fixed release after each Valheim patch). With mods installed, "boot-clean" beats "always-latest." Updates are now manual: SSH in, re-enable cron temporarily OR `steamcmd app_update 896660 validate` after confirming PlanBuild has shipped a fix. |
 | 2026-05-03 | **Allow metals through portals via `SERVER_ARGS="-modifier portals casual"`** | Friend-group quality-of-life. Removes the original-game restriction that copper/tin/iron/silver/black-metal can't transport through portals. Exposed via lloesche's `SERVER_ARGS` env passthrough, which the image appends to the Valheim binary's command line. Verified in the running process's `argv`. Other modifiers can be space-separated; reverting is `SERVER_ARGS=""`. |
 | 2026-05-03 | **All `[Server Settings] Allow X = false` flipped to `true` in PlanBuild config** | Investigating "terrain tools don't work" friend feedback led to discovering the server-side config keys we'd missed (PRD-correction: I'd previously claimed they didn't exist). PlanBuild's `marcopogo.PlanBuild.cfg` has 5 `Allow X` flags in `[Server Settings]`; 3 default to `false` (direct-build, terrain-tools, server-side blueprints). Friend-group server is private + trusted, so flip all to `true`. Live-edited the .cfg on the persistent disk (instant fix once PlanBuild reads the value, latest at next container restart) and added an idempotent `sed` patch to `install-mods.sh` so fresh VMs get the same settings (with a one-bounce caveat documented in runbook §6.6 since PlanBuild creates the .cfg on its FIRST plugin load, not on lloesche's bootstrap). |
+| 2026-05-04 | **Idle watcher RE-ENABLED (`idle_watcher_paused = false`)** | A2S daemon verified accurate across yesterday's testing: live container bounces, multi-player connection scenarios, post-mod-install boots — daemon's `player_count` always matched a raw A2S probe. Original failure modes are structurally gone (log-tail truncation, follow-stream fragility, Steam-only regex mismatch — A2S asks the game itself, no log parsing). Manual scheduler fire after un-pause: both targets reported truthful decisions (`[valheim] empty 1/4`, `[lavalink] empty 1/4` — both VMs were RUNNING but actually idle). The lavalink path also works correctly for the first time today (was 404'ing on the wrong endpoint before yesterday's fix). Watcher kept at `empty_checks_to_stop=4` + 30-min cron (90-120 min idle window); plenty of margin for a single false-empty to be benign. PlanBuild `Awake` failure (Option A) doesn't affect the daemon — A2S is independent of any mod state. |
 
 ---
 
