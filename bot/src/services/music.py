@@ -171,29 +171,46 @@ async def connect_node(client: discord.Client, host: str, port: int, password: s
          wavelink.Pool in a CONNECTED state". We poll node.status
          here until ready (or timeout).
 
-      3. Idempotent: if a node with the same identifier is already
-         in the pool and CONNECTED *and* a /v4/info probe succeeds,
-         we return immediately without re-creating it.
+      3. Idempotent fast-path: if a node with the same identifier is
+         in the pool, CONNECTED, pointing at the same URI, AND a
+         /v4/info probe succeeds, we return immediately without
+         re-creating it.
 
-      4. Stale-session detection: if the cached node is CONNECTED but
-         the URI changed (new IP after VM stop+start) or /v4/info
-         fails (Lavalink restarted, session_id no longer valid), we
-         drop the cached node and reconnect from scratch. Without
-         this, an idle-watcher-induced VM cycle would require a
-         manual bot bounce.
+      4. Stale-node eviction: any other state of the existing-node
+         entry forces an evict-and-reconnect:
+
+           - CONNECTED but URI changed (idle-watcher cycled the VM,
+             new public IP) -> _v4/info_ probe catches this
+           - CONNECTED but /v4/info fails (Lavalink restarted; cached
+             session_id is invalid) -> probe also catches this
+           - DISCONNECTED (Wavelink lost the WS when Lavalink VM was
+             stopped by the watcher; the entry is still in
+             Pool.nodes but useless) -> THIS BRANCH FIXES THE
+             2026-05-04 bug where /music play after a watcher stop
+             logged "Unable to connect ... as you already have a
+             node with identifier" and silently failed
+           - CONNECTING / any other transitional -> evict to be safe;
+             reconnect is cheap, leaving a half-dead entry isn't
+
+         Without these, an idle-watcher-induced VM cycle would
+         require a manual bot bounce.
     """
     uri = f"http://{host}:{port}"
 
     existing = wavelink.Pool.nodes.get(_NODE_IDENTIFIER)
-    if existing is not None and existing.status is wavelink.NodeStatus.CONNECTED:
+    if existing is not None:
+        is_connected = existing.status is wavelink.NodeStatus.CONNECTED
         existing_uri = getattr(existing, "uri", None)
-        if existing_uri == uri and await _node_is_live(uri, password):
+        if is_connected and existing_uri == uri and await _node_is_live(uri, password):
+            # Fast-path: same URI, healthy probe, definitely usable.
             logger.debug("Lavalink node already connected and healthy", uri=uri)
             return
-        # Cached node is stale (URI moved or /v4/info failed). Evict
-        # so Pool.connect below doesn't trip on the duplicate identifier.
+        # Any other state (DISCONNECTED, CONNECTED-but-stale, CONNECTING,
+        # ...) means the cached entry can't be reused. Evict so the
+        # Pool.connect below doesn't trip on the duplicate identifier.
         logger.info(
-            "Cached Lavalink node is stale; reconnecting",
+            "Cached Lavalink node not usable; evicting and reconnecting",
+            cached_status=str(existing.status),
             cached_uri=existing_uri,
             new_uri=uri,
         )
