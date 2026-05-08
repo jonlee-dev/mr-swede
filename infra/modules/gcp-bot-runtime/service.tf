@@ -85,6 +85,41 @@ resource "google_cloud_run_v2_service" "bot" {
         container_port = 8080
       }
 
+      # Strict liveness probe.
+      #
+      # The 2026-05-08 incident: bot's Discord gateway WS silently died
+      # but bot.is_ready() (sticky once True) and bot.latency (caches
+      # last value) both kept reporting "fine" indefinitely. Cloud Run's
+      # default TCP probe was satisfied that uvicorn was listening, so
+      # the wedged container ran for ~5 hours unable to receive
+      # interactions. Each retry on the gateway side burned Discord's
+      # IDENTIFY rate-limit budget; eventually we hit a 429 storm.
+      #
+      # /livez (in src/http.py) returns 503 when ANY of:
+      #   - bot is not initialized
+      #   - bot.is_ready() is False
+      #   - bot.is_closed() is True
+      #   - bot.ws is None or not open
+      #   - no gateway events received yet
+      #   - last gateway event is >90s old (~2 missed heartbeats)
+      #
+      # Cloud Run hits /livez every 60s; after 5 consecutive 503s
+      # (~5 min unhealthy) the container is killed and min-instances=1
+      # spins up a fresh replacement. The 5-min grace is intentional:
+      # long enough to ride out a transient Cloudflare blip without
+      # restart-flapping (which is what burned the IDENTIFY budget on
+      # 2026-05-08), short enough that an actual wedge gets fixed
+      # without operator intervention.
+      liveness_probe {
+        http_get {
+          path = "/livez"
+        }
+        period_seconds        = 60
+        timeout_seconds       = 3
+        failure_threshold     = 5
+        initial_delay_seconds = 30
+      }
+
       env {
         name  = "ENV"
         value = "production"
