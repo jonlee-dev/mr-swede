@@ -101,7 +101,18 @@ def _to_track_info(track: wavelink.Playable, requester_id: int | None = None) ->
 
 
 _NODE_IDENTIFIER = "mr-swede-main"
-_CONNECT_TIMEOUT_SECONDS = 30.0
+
+# How long connect_node waits for the Wavelink Node to reach CONNECTED
+# state. This was 30s, but on a 2026-05-07 cold-start incident every
+# /music play attempt timed out at 30s while Lavalink was still
+# finishing its boot (BepInExPack/lavasrc plugin downloads from
+# Thunderstore on first run + JVM startup). The cog's user-facing
+# "wait ~90 seconds and try again" message is the actual cold-start
+# expectation, so the connect timeout should match it. 90s gives the
+# JVM-on-GCE plenty of headroom; longer would just delay error
+# reporting on legitimately broken servers.
+_CONNECT_TIMEOUT_SECONDS = 90.0
+
 _CONNECT_POLL_INTERVAL_SECONDS = 0.5
 _HEALTH_CHECK_TIMEOUT_SECONDS = 3.0
 
