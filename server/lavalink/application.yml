@@ -63,7 +63,17 @@ lavalink:
     gc-warnings: true
 
   plugins:
-    - dependency: "dev.lavalink.youtube:youtube-plugin:1.13.5"
+    # Bumped 1.13.5 -> 1.18.1 on 2026-05-09 after observing tracks
+    # cutting out within 12-13 seconds. Lavalink's startup banner
+    # printed: "YOUTUBE-SOURCE VERSION 1.18.1 AVAILABLE / Update to
+    # ensure the YouTube source remains operational!" -- YouTube
+    # periodically breaks older versions of the unofficial plugin
+    # (bot-detection / API changes), and the symptom is exactly what
+    # we saw: SOME tracks play normally, others get cut after a few
+    # seconds depending on which video format YouTube is willing to
+    # serve. Bumping to the version the banner suggests is the
+    # canonical fix.
+    - dependency: "dev.lavalink.youtube:youtube-plugin:1.18.1"
       repository: "https://maven.lavalink.dev/releases"
       snapshot: false
     # lavasrc: Spotify URL resolution. Pinned to a 4.x stable release
