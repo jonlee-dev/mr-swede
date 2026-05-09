@@ -1,6 +1,5 @@
 """Discord bot setup and configuration."""
 
-import time
 from typing import Any
 
 import discord
@@ -48,31 +47,18 @@ class MrSwede(commands.Bot):
         self.settings = settings
         self.secrets = secrets
 
-        # Gateway liveness signal for /livez. Updated on every received
-        # gateway message via on_socket_event_type below. The 2026-05-08
-        # incident showed that bot.is_ready() and bot.latency can both
-        # report "fine" indefinitely after a silent WS degradation --
-        # is_ready() never resets once True, and bot.latency caches the
-        # last measured value. We need a freshness signal that decays
-        # when the gateway actually stops dispatching events, so /livez
-        # can fail and Cloud Run can replace the wedged instance.
-        #
-        # `time.monotonic()` (not wall-clock) so clock skew can't make
-        # a fresh event look stale or vice versa.
-        self.last_socket_event_time: float = time.monotonic()
-
-    async def on_socket_event_type(self, event_type: str | None) -> None:
-        """Bump last_socket_event_time on every received gateway message.
-
-        Discord-py dispatches `socket_event_type` for ALL inbound WS
-        messages -- DISPATCH events get a non-None event_type string;
-        non-DISPATCH messages (heartbeat acks, reconnect signals, etc.)
-        get None. We don't care which kind it is -- ANY traffic from
-        Discord proves the connection is alive. Heartbeats happen every
-        ~41s, so a 90s freshness window catches a dead WS within ~2
-        missed heartbeats.
-        """
-        self.last_socket_event_time = time.monotonic()
+        # NOTE 2026-05-09: previously this class tracked
+        # `last_socket_event_time` updated via `on_socket_event_type`,
+        # which only fires for DISPATCH ops -- not heartbeats. A quiet
+        # guild stretch (no message/presence activity) would make the
+        # /livez probe go stale within 90s and Cloud Run would
+        # kill-loop the bot every ~5 min during low-traffic periods.
+        # The freshness signal moved into src/http.py's snapshot
+        # function, which reads discord.py's internal
+        # `bot.ws._keep_alive._last_recv` -- that timestamp is bumped
+        # via `KeepAliveHandler.tick()` on every received WS message
+        # of any kind (including heartbeats sent every ~41s by Discord),
+        # so it doesn't false-positive on quiet bots.
 
     async def on_ready(self) -> None:
         if self.user:

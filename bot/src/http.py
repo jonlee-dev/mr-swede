@@ -228,9 +228,24 @@ def _evaluate_liveness(snap: _LivenessSnapshot) -> tuple[bool, str]:
     return True, ""
 
 
-def _snapshot_liveness(now: float) -> _LivenessSnapshot:
+def _snapshot_liveness(now_perf: float) -> _LivenessSnapshot:
     """Build a snapshot from the live `_bot` global. Wrapper so the
     pure decision logic stays test-friendly.
+
+    The freshness signal uses `bot.ws._keep_alive._last_recv` --
+    discord.py's KeepAliveHandler bumps that attribute via `tick()`
+    on every received WebSocket message, regardless of op code
+    (HEARTBEAT_ACK, DISPATCH, RECONNECT, etc). Discord sends a
+    heartbeat ACK every ~41s, so this stays fresh on a healthy
+    connection even when the guild is quiet. We read this internal
+    rather than tracking our own `on_socket_event_type` listener
+    (which fires for DISPATCH only and false-positived on quiet
+    bots -- 2026-05-09 regression).
+
+    `_last_recv` uses `time.perf_counter()` internally so the caller
+    must pass a perf_counter timestamp for the subtraction to be
+    meaningful. perf_counter and monotonic share monotonicity but
+    have different reference points; mixing them gives nonsense.
     """
     bot = _bot
     if bot is None:
@@ -243,13 +258,18 @@ def _snapshot_liveness(now: float) -> _LivenessSnapshot:
             startup_error=_startup_error,
         )
     ws = getattr(bot, "ws", None)
-    last_event = getattr(bot, "last_socket_event_time", None)
+    keep_alive = getattr(ws, "_keep_alive", None) if ws is not None else None
+    last_recv = getattr(keep_alive, "_last_recv", None) if keep_alive is not None else None
     return _LivenessSnapshot(
         bot_initialized=True,
         is_ready=bot.is_ready(),
         is_closed=bot.is_closed(),
         ws_open=bool(ws is not None and getattr(ws, "open", False)),
-        last_socket_event_age_seconds=(now - last_event) if last_event is not None else None,
+        # If keep_alive isn't set yet (mid-handshake) treat freshness
+        # as unknown -> None. The ws_open check above carries the
+        # liveness signal during this window; a not-yet-running
+        # heartbeat thread shouldn't fail the probe on its own.
+        last_socket_event_age_seconds=(now_perf - last_recv) if last_recv is not None else None,
         startup_error=_startup_error,
     )
 
@@ -268,7 +288,7 @@ async def livez() -> JSONResponse:
     hiccup) without flapping into a restart-storm, and short enough
     that a real wedge gets fixed without operator intervention.
     """
-    snap = _snapshot_liveness(time.monotonic())
+    snap = _snapshot_liveness(time.perf_counter())
     alive, reason = _evaluate_liveness(snap)
     body: dict[str, Any] = {"alive": alive}
     if not alive:
