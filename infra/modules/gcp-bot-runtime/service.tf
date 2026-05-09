@@ -110,16 +110,9 @@ resource "google_cloud_run_v2_service" "bot" {
       # restart-flapping (which is what burned the IDENTIFY budget on
       # 2026-05-08), short enough that an actual wedge gets fixed
       # without operator intervention.
-      # NOTE 2026-05-09: probe path temporarily on /health while we
-      # roll out the proper /livez fix (replacing the
-      # on_socket_event_type-based freshness signal with
-      # bot.ws._keep_alive._last_recv, which doesn't false-positive
-      # on quiet bots). Once the bot's new revision is live and we
-      # confirm /livez returns 200 reliably, swap path back to
-      # "/livez" via a follow-up TF apply.
       liveness_probe {
         http_get {
-          path = "/health"
+          path = "/livez"
         }
         period_seconds        = 60
         timeout_seconds       = 3
