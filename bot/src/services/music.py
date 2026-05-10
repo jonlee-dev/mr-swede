@@ -151,19 +151,44 @@ async def _node_is_live(uri: str, password: str) -> bool:
 
 
 async def _drop_stale_node(node: wavelink.Node) -> None:
-    """Close + evict a node so the next connect_node call gets a clean slate.
+    """Close AND fully evict a node from the Pool so the next
+    connect_node call gets a clean slate.
 
-    Wavelink doesn't expose a public "remove node" API; the safe
-    sequence is `node.close()` (which sets status to DISCONNECTED and
-    closes the WS) followed by popping it from `Pool.nodes`. After
-    this, `Pool.connect(...)` accepts a fresh Node with the same
-    identifier without raising 'NodeAlreadyExists'.
+    THE GOTCHA (2026-05-10): the previous version of this function
+    called `await node.close()` followed by
+    `wavelink.Pool.nodes.pop(_NODE_IDENTIFIER, None)`. That second
+    call was a SILENT NO-OP. `Pool.nodes` is a `classproperty`
+    that returns `cls.__nodes.copy()` -- a throwaway dict. Popping
+    from the copy doesn't touch Wavelink's real internal storage
+    (`_Pool__nodes`, name-mangled). The old node's identifier
+    therefore stayed registered in the Pool, and the next
+    `Pool.connect(nodes=[new_node_with_same_identifier])` either
+    (a) silently rejected the new node with the "Unable to connect
+    ... as you already have a node with identifier" log, or
+    (b) accepted it but ended up in a confused state where the WS
+    handshake never completed.
+
+    Either way, the user's symptom was 'connect timed out at 90s'
+    after a Lavalink VM had been recycled (new IP). Our eviction
+    triggered correctly but didn't actually free the slot.
+
+    Correct API: `await node.close(eject=True)`. The `eject` flag
+    (added in Wavelink 3.2.1) makes `close()` itself remove the
+    entry from `_Pool__nodes` -- the real dict, not a copy. After
+    this returns, `_NODE_IDENTIFIER` is genuinely free for
+    reassignment.
     """
     try:
-        await node.close()
+        await node.close(eject=True)
     except Exception as exc:  # noqa: BLE001 -- best-effort cleanup; we don't care why close failed
-        logger.warning("node.close() raised during stale-node eviction", error=repr(exc))
-    wavelink.Pool.nodes.pop(_NODE_IDENTIFIER, None)
+        logger.warning("node.close(eject=True) raised during stale-node eviction", error=repr(exc))
+        # Belt-and-suspenders: if close() raised before reaching its
+        # own eject branch, fall back to manually popping the real
+        # private dict via name-mangling. This is private API and may
+        # break across Wavelink versions, but pinning Pool.connect
+        # behind a confirmed-stale node is worse than a small
+        # version-coupling risk.
+        getattr(wavelink.Pool, "_Pool__nodes", {}).pop(_NODE_IDENTIFIER, None)
 
 
 async def connect_node(client: discord.Client, host: str, port: int, password: str) -> None:
