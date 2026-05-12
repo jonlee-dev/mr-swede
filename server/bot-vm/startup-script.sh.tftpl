@@ -145,9 +145,25 @@ sudo -u bot poetry install --no-interaction --no-root || {
     /usr/bin/poetry install --no-interaction --no-root
 }
 
+# Pin override for google-auth >=2.46. 2.45.0 has a regression in
+# _prepare_request_for_mds that surfaces during
+# SecretManagerServiceClient() init on GCE as:
+#   AttributeError: 'Request' object has no attribute 'session'
+# 2026-05-12 first-boot observed this on bot-vm. poetry.lock can't
+# easily be regenerated from a Windows host without Poetry installed,
+# so the durable fix is this post-install pip upgrade -- idempotent,
+# pip recognizes already-latest as a no-op. Remove once poetry.lock
+# is regenerated to pin >=2.46 directly.
+sudo -u bot /opt/mr-swede/bot/.venv/bin/pip install --upgrade --quiet "google-auth>=2.46" \
+  || echo "WARN: google-auth upgrade failed; bot may hit 'Request has no attribute session' on GSM init"
+
 # Bot env file with all the TF-templated (non-secret) values.
+# bot_env_content is pre-rendered via templatefile() at module-eval
+# time (see gcp-bot-vm/instance.tf locals.bot_env_content), so the
+# $${var} placeholders inside bot.env.tftpl are already substituted
+# by the time this base64 blob is encoded.
 base64 -d > /etc/bot/bot.env <<'__BOTVM_BLOB_EOF__'
-${base64encode(bot_env_template)}
+${base64encode(bot_env_content)}
 __BOTVM_BLOB_EOF__
 chmod 0640 /etc/bot/bot.env
 chown root:bot /etc/bot/bot.env

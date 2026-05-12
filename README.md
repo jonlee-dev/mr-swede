@@ -1,13 +1,13 @@
 # Mr. Swede
 
 [![CI](https://github.com/jonlee-dev/mr-swede/actions/workflows/ci.yaml/badge.svg)](https://github.com/jonlee-dev/mr-swede/actions/workflows/ci.yaml)
-[![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![Discord.py](https://img.shields.io/badge/discord.py-2.3+-blue.svg)](https://discordpy.readthedocs.io/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-A multi-feature Discord bot for our server. Today it runs an on-demand Valheim game server and a Lavalink-backed music player; the cog architecture is built so the next feature is just another cog and (if it needs cloud resources) another Terraform module. Bot runs on Cloud Run; both game/audio servers run on on-demand GCE VMs that only spin up when someone asks for them.
+A multi-feature Discord bot for our server. Today it runs an on-demand Valheim game server and a Lavalink-backed music player; the cog architecture is built so the next feature is just another cog and (if it needs cloud resources) another Terraform module. The bot and Lavalink co-tenant a single always-on GCE `e2-small` VM (as of 2026-05-12); Valheim runs on a separate on-demand GCE VM that only spins up when someone asks for it.
 
-> **History.** v3.0.0 pruned the original Overwatch-stats and music features down to a Valheim-only scope ([CHANGELOG.md](./CHANGELOG.md)). v4.x reintroduces music as a Lavalink-on-GCE deployment with its own cog and idle-watcher target — see [docs/prd.md](./docs/prd.md) for the target architecture and the extensibility levers that should keep the next feature additive.
+> **History.** v3.0.0 pruned the original Overwatch-stats and music features down to a Valheim-only scope ([CHANGELOG.md](./CHANGELOG.md)). v4.x reintroduced music as a Lavalink-on-GCE deployment with its own cog and idle-watcher target. v4.3 (2026-05-12) folded the bot off Cloud Run and onto a single VM with Lavalink — saving ~$35/mo and eliminating the music cold-start UX cost. See [docs/prd.md](./docs/prd.md) for the target architecture and decisions log.
 
 ---
 
@@ -15,9 +15,9 @@ A multi-feature Discord bot for our server. Today it runs an on-demand Valheim g
 
 | Path | Contents |
 |---|---|
-| [`bot/`](bot/) | Python (discord.py) bot — Cloud Run service. Slash-only. Cogs: `diagnostics`, `valheim`, `music`. |
-| [`infra/`](infra/) | Terraform for all GCP resources (bot runtime, Valheim VM, Lavalink VM, idle watcher). |
-| [`server/`](server/) | Files that run *inside* the GCE VMs — Valheim docker-compose + status daemon, Lavalink jar bootstrap + systemd unit. |
+| [`bot/`](bot/) | Python (discord.py) bot. Slash-only. Cogs: `diagnostics`, `valheim`, `music`. Runs as `bot.service` on the bot-vm; the VM clones this repo and runs from source. |
+| [`infra/`](infra/) | Terraform for all GCP resources (bot+Lavalink VM, Valheim VM, idle watcher, retained Cloud Run rollback). |
+| [`server/`](server/) | Files that run *inside* the GCE VMs — Valheim docker-compose + status daemon, Lavalink jar bootstrap + systemd units, bot systemd units + watchdog. |
 | [`docs/`](docs/) | PRD, architecture diagram, bootstrap procedure, runbook. |
 
 Bot-related Poetry / pytest / Docker commands run from inside [`bot/`](bot/). Terraform commands run from `infra/envs/prod/`.
@@ -26,13 +26,14 @@ Bot-related Poetry / pytest / Docker commands run from inside [`bot/`](bot/). Te
 
 ## Status
 
-The bot is fully functional. `/valheim *` is wired to GCE and a log-scraping HTTP daemon on the Valheim VM; `/music *` is wired to a Lavalink server on a second GCE VM via Wavelink. The GCP infra is fully Terraform-managed across five modules:
+The bot is fully functional. `/valheim *` is wired to GCE and a log-scraping HTTP daemon on the Valheim VM; `/music *` is wired to Lavalink (co-tenanted on the same VM as the bot) via Wavelink. The GCP infra is fully Terraform-managed:
 
 - [`gcp-bootstrap`](infra/modules/gcp-bootstrap) — APIs, state bucket, Workload Identity Federation
-- [`gcp-valheim-vm`](infra/modules/gcp-valheim-vm) — VPC (shared with Lavalink), firewall, persistent disk, Valheim VM, server-password GSM secret
-- [`gcp-lavalink-vm`](infra/modules/gcp-lavalink-vm) — Lavalink VM (e2-small, no persistent disk), firewall, server-password GSM secret. Reuses the Valheim VPC.
-- [`gcp-bot-runtime`](infra/modules/gcp-bot-runtime) — Cloud Run service, Artifact Registry repo, Cloud Build trigger, IAM, Discord-secret container, instance-scoped controller role bound to both VMs
-- [`gcp-idle-watcher`](infra/modules/gcp-idle-watcher) — Cloud Function + Scheduler that polls each on-demand VM and stops it after N consecutive empty checks (default: ~60-90 min idle window per target). Multi-target: Valheim via `/status.json`, Lavalink via `/v4/players`.
+- [`gcp-valheim-vm`](infra/modules/gcp-valheim-vm) — VPC (shared with bot-vm), firewall, persistent disk, Valheim VM, server-password GSM secret
+- [`gcp-bot-vm`](infra/modules/gcp-bot-vm) — **current bot home (2026-05-12+)**. GCE `e2-small` co-tenanting `bot.service` + `lavalink.service`, IAP-SSH firewall, lavalink-server-password + spotify-client-credentials GSM bindings. Reuses the Valheim VPC and the `mr-swede-sa` service account from `gcp-bot-runtime`.
+- [`gcp-bot-runtime`](infra/modules/gcp-bot-runtime) — Cloud Run service, Artifact Registry repo, Cloud Build trigger, IAM, Discord-secret container. Kept at `min=0, max=1` as a rollback option; will be retired after the bot-vm soak.
+- [`gcp-lavalink-vm`](infra/modules/gcp-lavalink-vm) — *retired* standalone Lavalink VM. Module is kept short-term as a rollback option; `server/lavalink/` (which it consumed) is now also consumed by `gcp-bot-vm` for Lavalink config.
+- [`gcp-idle-watcher`](infra/modules/gcp-idle-watcher) — Cloud Function + Scheduler. Single-target since 2026-05-12 (Valheim via `/status.json`); the Lavalink target was dropped because Lavalink is always-on. Multi-target shape retained via `count`-guarded resources for future use.
 
 See [TODO.md](./TODO.md) for the cutover checklist and the manual prerequisites (Discord developer portal, Cloud Build ↔ GitHub OAuth).
 
@@ -47,7 +48,7 @@ See [TODO.md](./TODO.md) for the cutover checklist and the manual prerequisites 
 | `/valheim status` | Show VM state, PlayFab join code, server password, and player count |
 | `/valheim start` | Start the Valheim VM (idempotent) |
 | `/valheim stop` | Stop the Valheim VM (idempotent) |
-| `/music play <query>` | Auto-starts the Lavalink VM (idempotent), joins your voice channel, plays a YouTube search/URL or a Spotify track / playlist / album URL. YouTube playlist URLs work too. Up to 100 tracks per URL. |
+| `/music play <query>` | Joins your voice channel, plays a YouTube search/URL or a Spotify track / playlist / album URL. YouTube playlist URLs work too. Up to 100 tracks per URL. (Pre-2026-05-12 this also auto-started a standalone Lavalink VM; Lavalink is now co-tenanted with the bot at `localhost:2333`, so first-play of a session is instant.) |
 | `/music skip` | Skip the current track |
 | `/music pause` / `/music resume` | Toggle playback |
 | `/music stop` | Stop playback, clear the queue, leave the voice channel |
@@ -57,7 +58,7 @@ See [TODO.md](./TODO.md) for the cutover checklist and the manual prerequisites 
 | `/music shuffle` | Shuffle the queue |
 | `/music loop <off\|track\|queue>` | Toggle loop modes |
 
-The `/music *` group is gated to a designated `MUSIC_COMMAND_CHANNEL_ID` (default: `#bot-spam`) but joins whichever voice channel the invoking user is in. The Lavalink VM is auto-stopped by the idle watcher ~60-90 min after the last player leaves, mirroring the Valheim auto-stop behavior.
+The `/music *` group is gated to a designated `MUSIC_COMMAND_CHANNEL_ID` (default: `#bot-spam`) but joins whichever voice channel the invoking user is in. Lavalink now runs continuously alongside the bot — no auto-stop — so there's no cold-start cost on the first `/music play` of a session.
 
 ---
 
@@ -74,7 +75,7 @@ gcloud auth application-default login     # for GSM lookups (skip if using DISCO
 poetry run python -m src.main
 ```
 
-The bot starts a FastAPI server on port 8080 (for Cloud Run health checks) and connects to Discord in the background. If you don't have GSM access, set `DISCORD_TOKEN` in `bot/.env` to bypass GSM entirely.
+The bot starts a FastAPI server on port 8080 (used by the watchdog's `/livez` probe in production; harmless locally) and connects to Discord in the background. If you don't have GSM access, set `DISCORD_TOKEN` in `bot/.env` to bypass GSM entirely.
 
 ### Running tests
 
@@ -98,7 +99,7 @@ poetry run mypy src                   # type check
 
 ## Deployment
 
-The bot deploys via Cloud Build → Cloud Run, all Terraform-managed:
+Infra is Terraform-managed:
 
 ```bash
 cd infra/envs/prod
@@ -106,7 +107,18 @@ terraform plan
 terraform apply
 ```
 
-On `terraform apply`, [`infra/modules/gcp-bot-runtime`](infra/modules/gcp-bot-runtime) creates the Cloud Run service (with a `cloudrun/hello` placeholder image), the Artifact Registry repo, and the Cloud Build trigger. The first push to `master` (or `gcloud builds triggers run mr-swede-master --branch=master`) replaces the placeholder with the real bot image.
+The bot itself deploys manually from the VM (since 2026-05-12):
+
+```bash
+gcloud compute ssh bot-vm --tunnel-through-iap --zone us-central1-a --project mr-swede
+cd /opt/mr-swede
+sudo -u bot git pull
+sudo -u bot bash -c 'cd bot && poetry install --no-interaction --no-root'   # only on dep changes
+sudo systemctl restart bot
+sudo journalctl -u bot -f
+```
+
+Cloud Build still pushes images to Artifact Registry on every master commit (the trigger is wired up via `gcp-bot-runtime`), but the deployed Cloud Run service is at `min=0` and doesn't pick them up. To roll back to Cloud Run: see [runbook §17](docs/runbook.md).
 
 CI runs `fmt → validate → plan` on every PR touching `infra/**` and runs `apply` on merge to `master` (gated by the `prod` GitHub Environment). Auth is via Workload Identity Federation — no JSON keys.
 
@@ -115,26 +127,32 @@ CI runs `fmt → validate → plan` on every PR touching `infra/**` and runs `ap
 ### Cost estimate
 
 Numbers below are calibrated against 8 days of real usage data
-(2026-05-02 → 2026-05-10) — see `docs/prd.md` decisions log entry
-2026-05-10 for the full breakdown.
+(2026-05-02 → 2026-05-10) plus the 2026-05-12 bot+Lavalink co-tenancy
+migration — see `docs/prd.md` decisions log for the breakdown.
 
 | Component | ~Monthly | Notes |
 |---|---|---|
-| Cloud Run bot (`min=max=1`, `cpu_idle=false`, 1 vCPU + 512 Mi) | ~$45 | Always-on CPU is mandatory: Discord gateway is a long-lived WebSocket, not request/response. us-central1 Tier 1 rate × 2.59M vCPU-s/mo minus free tier. |
+| **Bot + Lavalink VM** (e2-small, always-on) | ~$10 | $0.014/hr × 730 hr. Co-tenants `bot.service` (Python + discord.py) and `lavalink.service` on a single VM. Replaced Cloud Run (~$13/mo at min=1) + standalone Lavalink VM (~$35/mo idle — see below). |
 | Valheim VM (e2-standard-2, ~7 hr/day measured) | ~$14 | $0.067/hr. Idle-watcher stops after 90-120 min idle; saves ~$34/mo vs always-on ($48). |
-| Lavalink VM (e2-small, ~3.6 hr/day measured) | ~$1.50 | $0.014/hr. Idle-watcher saves ~$8.50/mo vs always-on ($10). |
-| Persistent disks (30 GB boot + 20 GB data on Valheim, 10 GB boot on Lavalink) | ~$6 | pd-balanced at $0.10/GB-mo. Billed regardless of VM state. |
+| Persistent disks (30 GB boot + 20 GB data on Valheim, 15 GB boot on bot-vm) | ~$6.50 | pd-balanced at $0.10/GB-mo. Billed regardless of VM state. |
 | Egress (Discord WSS heartbeats + voice UDP + Valheim game traffic) | ~$5-10 | Highly usage-dependent. Voice/game traffic dominates when actively played. |
-| Idle watcher (Cloud Function + Scheduler) | <$0.05 | Under free tier — 30-min cron, <2s execution per tick. |
-| Artifact Registry (bot image) | ~$0.50 | ~5 GB stored |
-| **Total at current usage** | **~$72-77/mo** | |
+| Idle watcher (Cloud Function + Scheduler) | <$0.05 | Under free tier — 30-min cron, <2s execution per tick. Now single-target (Valheim only). |
+| Artifact Registry (bot image, unused since 2026-05-12) | ~$0.50 | ~5 GB stored. Cloud Build still pushes images on master commits but Cloud Run is at min=0; will be cleaned up after the bot-vm soak. |
+| Cloud Run mr-swede (min=0, rollback option) | $0 | No traffic; only billed if you set min=1. |
+| **Total at current usage** | **~$36-41/mo** | |
+
+**Previous estimate** (~$72-77/mo, pre-2026-05-12): bot on Cloud Run
+at min=1 ran ~$13/mo and standalone Lavalink VM was budgeted at
+~$1.50/mo but in reality ran 24/7 at ~$35/mo because the idle-watcher
+target was misconfigured for months. Folding bot+Lavalink onto a
+single e2-small captures both savings.
 
 **Optimization knobs** (none worth pulling at current scale):
 
-- *Skip idle-watcher* → +$40/mo, no operator action required after a session, no cold-start UX cost. Not worth.
-- *Move bot off Cloud Run to e2-small VM* → -$35/mo, lose Cloud Build auto-deploy + Cloud Run's `/livez` kill-and-replace + zero-ops managed restart. Would need to rebuild equivalents in systemd. Worth revisiting only if cost becomes an actual pain point.
+- *Skip idle-watcher (Valheim)* → +$34/mo, no operator action required after a session, no cold-start UX cost. Not worth.
+- *Roll bot back to Cloud Run* → +$3/mo, regain Cloud Build auto-deploy + Cloud Run's `/livez` kill-and-replace as a managed service. Watchdog timer on bot-vm replicates the kill-and-replace; manual `git pull + systemctl restart` replaces auto-deploy. Worth revisiting only if the manual deploy cadence becomes a pain point.
 
-The two big costs are the bot's always-on CPU and the on-demand VMs running 24/7. The idle watcher cuts each VM bill by ~70-80% in practice — it stops a VM after 60-90 minutes of zero players, so the cost table assumes ~3 hours of daily usage per VM rather than 24/7. The bot uses `cpu_idle = false` because Discord delivers slash commands over a WebSocket gateway (not over Cloud Run's HTTP port) — a CPU-throttled service starves the worker thread doing TLS handshakes from `/valheim *` and `/music *` calls. See [`infra/modules/gcp-bot-runtime/service.tf`](infra/modules/gcp-bot-runtime/service.tf) for the full reasoning.
+The big cost remaining is the Valheim VM (e2-standard-2, ~7hr/day actual usage); the idle-watcher already cuts that ~70%. The bot+Lavalink VM is cheap enough to keep always-on, which also kills the music cold-start UX cost.
 
 ---
 
@@ -157,7 +175,7 @@ The two big costs are the bot's always-on CPU and the on-demand VMs running 24/7
 | `LAVALINK_HOST` | `""` (auto-resolve) | Lavalink host. Empty = resolve the VM's public IP at runtime; set explicitly for local dev. |
 | `LAVALINK_PORT` | `2333` | Lavalink REST/WS port |
 | `MUSIC_COMMAND_CHANNEL_ID` | — | Discord channel ID where `/music *` is allowed (default: `#bot-spam`) |
-| `DISCORD_SECRET_PATH` | auto-built from `GCP_PROJECT_ID` | Full GSM secret resource path (`projects/<num>/secrets/discord-bot-secrets/versions/latest`). Cloud Run gets this from Terraform; locally the bot builds a default. |
+| `DISCORD_SECRET_PATH` | auto-built from `GCP_PROJECT_ID` | Full GSM secret resource path (`projects/<num>/secrets/discord-bot-secrets/versions/latest`). bot-vm gets this from Terraform via `/etc/bot/bot.env`; locally the bot builds a default. |
 | `HOST` | `0.0.0.0` | HTTP server bind address |
 | `PORT` | `8080` | HTTP server port |
 
@@ -191,10 +209,10 @@ The nested-object form above is preferred. The bot also accepts dot-notation key
 
 ```
 mr-swede/
-├── bot/                                 # Cloud Run service (Python, discord.py)
+├── bot/                                 # Python (discord.py); deployed via git clone to bot-vm
 │   ├── src/
 │   │   ├── main.py                      # uvicorn launcher
-│   │   ├── http.py                      # FastAPI app (health checks, lifespan)
+│   │   ├── http.py                      # FastAPI app (/livez liveness probe, lifespan)
 │   │   ├── bot.py                       # Discord client + token resolution
 │   │   ├── config/
 │   │   │   ├── settings.py              # Pydantic settings (incl. Lavalink + music channel)
@@ -212,7 +230,7 @@ mr-swede/
 │   │       ├── checks.py                # @requires_channel decorator (gates /music)
 │   │       └── helpers.py
 │   ├── tests/unit/                      # pytest, no integration tests yet
-│   ├── Dockerfile                       # Multi-stage poetry → pip
+│   ├── Dockerfile                       # Multi-stage poetry → pip (still built by Cloud Build for the Cloud Run rollback path)
 │   └── pyproject.toml
 │
 ├── infra/                               # Terraform — all GCP resources
@@ -220,15 +238,17 @@ mr-swede/
 │   └── modules/
 │       ├── gcp-bootstrap/               # APIs, TF state bucket, WIF
 │       ├── gcp-valheim-vm/              # Valheim VM, persistent disk, firewall, startup-script
-│       ├── gcp-lavalink-vm/             # Lavalink VM (e2-small, no PD), firewall, password secret
-│       ├── gcp-bot-runtime/             # Cloud Run service, AR repo, Cloud Build trigger, IAM
-│       └── gcp-idle-watcher/            # Multi-target Cloud Function + Scheduler (Valheim + Lavalink)
+│       ├── gcp-bot-vm/                  # Bot + Lavalink co-tenanted VM (current bot home)
+│       ├── gcp-bot-runtime/             # Cloud Run service (legacy/rollback only), AR repo, Cloud Build trigger, IAM
+│       ├── gcp-lavalink-vm/             # Standalone Lavalink VM (retired; rollback option)
+│       └── gcp-idle-watcher/            # Cloud Function + Scheduler (Valheim only since 5/12)
 │
 ├── server/                              # Files that run *inside* the GCE VMs
 │   ├── docker-compose.yml               # Valheim: lloesche/valheim-server-docker
 │   ├── startup-script.sh.tftpl          # Valheim per-boot bootstrap (idempotent)
 │   ├── scripts/                         # Valheim helpers (status daemon, ssh-invoked ops)
-│   └── lavalink/                        # Lavalink jar bootstrap, application.yml, systemd unit
+│   ├── lavalink/                        # Lavalink jar bootstrap, application.yml, systemd units (read by gcp-bot-vm)
+│   └── bot-vm/                          # bot-vm startup-script + bot.service / watchdog / fetch-secrets units
 │
 ├── docs/
 │   ├── architecture.md                  # Diagram + interface boundaries
@@ -251,10 +271,10 @@ See [docs/architecture.md](docs/architecture.md) for the network/data-flow diagr
 
 | Category | Technology |
 |---|---|
-| Runtime | Python 3.12 |
+| Runtime | Python 3.11+ (3.11 on bot-vm via Debian 12 stock; 3.12 in CI) |
 | Discord | discord.py[voice] 2.x (slash commands only; PyNaCl for voice) |
-| Music | Lavalink 4.2.x (Java, on GCE) + Wavelink 3.5.x (Python client) + youtube-source plugin + lavasrc (Spotify URL resolution) |
-| HTTP | FastAPI + uvicorn (Cloud Run health checks) |
+| Music | Lavalink 4.2.x (Java, co-tenanted on bot-vm) + Wavelink 3.5.x (Python client) + youtube-source plugin + lavasrc (Spotify URL resolution) |
+| HTTP | FastAPI + uvicorn (powers the `/livez` liveness probe consumed by the bot-vm watchdog timer) |
 | Secrets | Google Secret Manager |
 | Compute | google-cloud-compute (start/stop/describe) |
 | Server query | httpx (Valheim `/status.json`); urllib (idle-watcher probes) |
@@ -263,7 +283,7 @@ See [docs/architecture.md](docs/architecture.md) for the network/data-flow diagr
 | Testing | pytest, pytest-asyncio |
 | Linting | Ruff, MyPy |
 | CI/CD | GitHub Actions, Cloud Build |
-| Infrastructure | Terraform, GCP (Cloud Run, GCE, GSM, Cloud Functions, Cloud Scheduler) |
+| Infrastructure | Terraform, GCP (GCE bot-vm + Valheim VM, GSM, Cloud Functions, Cloud Scheduler; Cloud Run kept at min=0 as a rollback option) |
 
 ---
 

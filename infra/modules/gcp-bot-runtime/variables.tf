@@ -89,13 +89,13 @@ variable "artifact_repository_id" {
 }
 
 variable "min_instances" {
-  description = "Cloud Run min instances. Required = 1 because Discord drops gateway sessions that go idle, so we must keep one instance warm 24/7."
+  description = "Cloud Run min instances. 2026-05-12: defaults to 0 because the bot now runs on gcp-bot-vm; this Cloud Run service is kept around as a rollback option but doesn't serve traffic. While the bot was on Cloud Run this was 1 (Discord drops gateway sessions that go idle). To roll back to Cloud Run: set min=1 + max=1 here, scale bot-vm bot.service down on the VM (or destroy the bot-vm module entirely)."
   type        = number
-  default     = 1
+  default     = 0
 }
 
 variable "max_instances" {
-  description = "Cloud Run max instances. Required = 1 because the bot maintains a single Discord gateway WebSocket -- multiple instances would each open their own session and double-process every event."
+  description = "Cloud Run max instances. Still 1 -- we never want concurrent gateway sessions if the service is ever scaled back up. Constraint is the same regardless of which host (Cloud Run vs bot-vm) is the live bot."
   type        = number
   default     = 1
 }

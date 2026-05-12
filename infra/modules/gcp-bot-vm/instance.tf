@@ -23,10 +23,29 @@ locals {
   # modules (during the migration window) and after.
   lavalink_dir = "${path.module}/../../../server/lavalink"
 
+  # bot.env.tftpl uses ${var} substitution. Render it HERE (not in
+  # the outer startup-script) so the literal env-file lands on disk
+  # with values already substituted -- there's no boot-time templating
+  # step on the VM. Initial cut used file() instead of templatefile()
+  # and the bot crashed in pydantic with 'unable to parse string as
+  # integer: ${lavalink_port}'.
+  bot_env_content = templatefile("${local.bot_vm_dir}/scripts/bot.env.tftpl", {
+    discord_bot_name             = var.discord_bot_name
+    discord_secret_path          = var.discord_secret_path
+    discord_guild_id             = var.discord_guild_id
+    music_command_channel_id     = var.music_command_channel_id
+    gcp_project_id               = var.project_id
+    valheim_instance_name        = var.valheim_instance_name
+    valheim_zone                 = var.valheim_zone
+    valheim_status_http_port     = var.valheim_status_http_port
+    valheim_password_secret_path = var.valheim_password_secret_path
+    lavalink_port                = var.lavalink_port
+  })
+
   startup_script = templatefile("${local.bot_vm_dir}/startup-script.sh.tftpl", {
-    # Bot runtime artifacts.
+    # Bot runtime artifacts. bot_env_content is pre-rendered above.
     bot_service          = file("${local.bot_vm_dir}/scripts/bot.service")
-    bot_env_template     = file("${local.bot_vm_dir}/scripts/bot.env.tftpl")
+    bot_env_content      = local.bot_env_content
     bot_watchdog_sh      = file("${local.bot_vm_dir}/scripts/bot-watchdog.sh")
     bot_watchdog_service = file("${local.bot_vm_dir}/scripts/bot-watchdog.service")
     bot_watchdog_timer   = file("${local.bot_vm_dir}/scripts/bot-watchdog.timer")
@@ -52,25 +71,10 @@ locals {
       "${local.lavalink_dir}/scripts/lavalink-fetch-secrets.service"
     )
 
-    # Substituted into bot.env at template-render time so the bot's
-    # env-file lands fully resolved on disk -- no separate boot-time
-    # interpolation step. Secrets are NOT here; they're fetched at
-    # boot by bot-fetch-secrets.service and appended to the env file.
-    discord_bot_name             = var.discord_bot_name
-    discord_secret_path          = var.discord_secret_path
-    discord_guild_id             = var.discord_guild_id
-    music_command_channel_id     = var.music_command_channel_id
-    gcp_project_id               = var.project_id
-    valheim_instance_name        = var.valheim_instance_name
-    valheim_zone                 = var.valheim_zone
-    valheim_status_http_port     = var.valheim_status_http_port
-    valheim_password_secret_path = var.valheim_password_secret_path
-    lavalink_port                = var.lavalink_port
-
-    # Secret IDs for the bot-fetch-secrets script. The script
-    # constructs the full versioned path from these.
-    lavalink_password_secret_id   = var.lavalink_password_secret_id
-    spotify_credentials_secret_id = var.spotify_credentials_secret_id
+    # The bot-env vars (discord_bot_name, lavalink_port, etc.) are
+    # consumed by `local.bot_env_content` above -- pre-rendered. The
+    # OUTER startup-script template only needs the git-deploy vars
+    # below (the bot's repo + ref for the boot-time clone).
 
     # Bot deploy mechanism.
     bot_git_repo = var.bot_git_repo

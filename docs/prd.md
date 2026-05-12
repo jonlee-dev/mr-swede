@@ -29,11 +29,11 @@ v4.0 shipped: music feature is live. v4.x is the current line with stability har
 
 | Component | Where it lives | What it does |
 |---|---|---|
-| **Bot service** | [`bot/`](../bot/) — Cloud Run, Python 3.12 | Discord gateway client (with voice intent), FastAPI health endpoint. `min=1`, always-on CPU. |
-| **Bot infra** | [`infra/modules/gcp-bot-runtime`](../infra/modules/gcp-bot-runtime) | Cloud Run service + Cloud Build trigger + IAM + Discord secret container. Instance-scoped controller role bound to both VMs. |
+| **Bot + Lavalink VM** | [`infra/modules/gcp-bot-vm`](../infra/modules/gcp-bot-vm) + [`server/bot-vm/`](../server/bot-vm/) + [`bot/`](../bot/) | GCE `e2-small`, always-on. Co-tenants `bot.service` (Python 3.11, discord.py[voice], Discord gateway) and `lavalink.service` (Lavalink jar). Bot connects to Lavalink at `localhost:2333`. Boot via metadata.startup-script. Reuses the Valheim VPC. |
+| **Bot runtime — legacy** | [`infra/modules/gcp-bot-runtime`](../infra/modules/gcp-bot-runtime) | Cloud Run service `mr-swede` + Cloud Build trigger + IAM + Discord secret container. Was the bot's home until 2026-05-12; now scaled to `min=0, max=1` as a one-flip rollback option. Service account `mr-swede-sa` is reused by `gcp-bot-vm`. |
 | **Valheim VM** | [`infra/modules/gcp-valheim-vm`](../infra/modules/gcp-valheim-vm) + [`server/`](../server/) | GCE VM running `lloesche/valheim-server`. Boot via metadata.startup-script (NOT cloud-init — Debian default doesn't ship cloud-init). |
-| **Lavalink VM** | [`infra/modules/gcp-lavalink-vm`](../infra/modules/gcp-lavalink-vm) + [`server/lavalink/`](../server/lavalink/) | GCE VM running the Lavalink jar directly under systemd. Stateless, no persistent disk. Reuses the Valheim VPC. |
-| **Idle watcher** | [`infra/modules/gcp-idle-watcher`](../infra/modules/gcp-idle-watcher) | Multi-target Cloud Function + Scheduler. Iterates over `[valheim, lavalink]`, probes each, stops independently. |
+| **Lavalink VM — retired** | [`infra/modules/gcp-lavalink-vm`](../infra/modules/gcp-lavalink-vm) + [`server/lavalink/`](../server/lavalink/) | Was a standalone GCE `e2-small` running Lavalink. Folded into the bot VM on 2026-05-12; module kept short-term as a rollback option and as the source-of-truth for Lavalink config (which `gcp-bot-vm` reads from `server/lavalink/`). To be destroyed after the bot-vm soak. |
+| **Idle watcher** | [`infra/modules/gcp-idle-watcher`](../infra/modules/gcp-idle-watcher) | Cloud Function + Scheduler. Now single-target (Valheim only); the Lavalink target was dropped 2026-05-12. Multi-target shape retained via `count`-guarded resources so a second target can be re-added with a one-line variable flip. |
 | **Bootstrap** | [`infra/modules/gcp-bootstrap`](../infra/modules/gcp-bootstrap) | One-time TF state bucket + Workload Identity Federation + project APIs. |
 
 ### Discord surface
@@ -45,7 +45,7 @@ v4.0 shipped: music feature is live. v4.x is the current line with stability har
 | `/valheim status` | Show VM state, PlayFab join code, server password, player count |
 | `/valheim start` | Boot the Valheim VM (idempotent) |
 | `/valheim stop` | Stop the Valheim VM (idempotent) |
-| `/music play <query>` | Auto-start the Lavalink VM, join your VC, enqueue and play the resolved track |
+| `/music play <query>` | Join your VC, enqueue and play the resolved track. (Pre-2026-05-12 this also auto-started a standalone Lavalink VM; Lavalink is now co-tenanted on the always-on bot VM at `localhost:2333` so first-play is instant.) |
 | `/music skip` | Skip the current track |
 | `/music pause` / `/music resume` | Toggle playback |
 | `/music stop` | Stop, clear queue, leave voice |
@@ -67,43 +67,54 @@ v4.0 shipped: music feature is live. v4.x is the current line with stability har
 
 ---
 
-## 3. Architecture (current; v4.x)
+## 3. Architecture (current; v4.x — post-2026-05-12 co-tenant)
 
 ```
                      Discord (gateway WSS + voice UDP)
                               ▲
                               │
-                ┌─────────────┴───────────────┐
-                │   Bot — Cloud Run (Python)  │
-                │   ┌───────────────────────┐ │
-                │   │  Slash command tree   │ │
-                │   │  • /ping /info        │ │
-                │   │  • /valheim *         │ │
-                │   │  • /music *           │ │
-                │   └─────┬────────────┬────┘ │
-                │         │            │      │
-                │   ┌─────▼─────┐ ┌────▼────┐ │
-                │   │ services/ │ │  cogs/  │ │
-                │   │  compute  │ │ valheim │ │
-                │   │  query    │ │  music  │ │
-                │   │  music    │ │ diag    │ │
-                │   └─────┬─────┘ └─────────┘ │
-                └─────────┼─────────────────────┘
-                          │
-        ┌─────────────────┼──────────────────────────┐
-        │                 │                          │
-   ┌────▼─────┐     ┌─────▼──────┐         ┌─────────▼──────────┐
-   │ Valheim  │     │  Lavalink  │         │  Idle watcher      │
-   │  VM      │     │   VM       │         │  (Cloud Function   │
-   │          │     │            │         │   + Scheduler)     │
-   │ GCE      │     │  GCE       │         │                    │
-   │ on-demand│     │  on-demand │         │ polls both VMs     │
-   └────▲─────┘     └────▲───────┘         │ stops idle ones    │
-        │                │                  │ (state per target) │
-        │                │                  └────────────────────┘
-        │ stop/start     │ stop/start
-        └────────────────┴── via mrSwedeVmController custom role
-                            (instance-scoped per VM)
+        ┌─────────────────────┴────────────────────────────┐
+        │   Bot + Lavalink VM (gcp-bot-vm, e2-small)        │
+        │                                                   │
+        │   ┌───────────────────────────────────────────┐   │
+        │   │  bot.service (Python 3.11)                │   │
+        │   │   • Slash command tree                    │   │
+        │   │     - /ping /info                         │   │
+        │   │     - /valheim *                          │   │
+        │   │     - /music *                            │   │
+        │   │   • services/ + cogs/                     │   │
+        │   │   • bot-watchdog.timer (kill+replace via  │   │
+        │   │     systemd on 5x /livez 503)             │   │
+        │   └──────────────┬───────────┬────────────────┘   │
+        │                  │ localhost │                    │
+        │                  │  :2333    │ instances.start    │
+        │   ┌──────────────▼────────┐  │                    │
+        │   │  lavalink.service     │  │                    │
+        │   │  (Lavalink jar 4.2.2) │  │                    │
+        │   └───────────────────────┘  │                    │
+        └──────────────────────────────┼────────────────────┘
+                                       │
+                       ┌───────────────┼──────────────────┐
+                       │               │                  │
+                  ┌────▼─────┐    ┌────▼──────────────┐   │
+                  │ Valheim  │    │  Idle watcher     │   │
+                  │  VM      │    │  (Cloud Function  │   │
+                  │          │    │   + Scheduler)    │   │
+                  │ GCE      │    │                   │   │
+                  │ on-demand│    │ polls Valheim VM  │   │
+                  └────▲─────┘    │ stops if empty    │   │
+                       │          │ (Lavalink target  │   │
+                       │ stop/    │  dropped 5/12)    │   │
+                       │ start    └───────────────────┘   │
+                       └── via mrSwedeVmController custom │
+                           role (instance-scoped)         │
+                                                          │
+   ┌─────────────────────────────────────────────────────┐│
+   │  Cloud Run mr-swede (legacy, min=0)                 │◄┘
+   │  Kept as a one-flip rollback (set min=1 to restore) │
+   │  Does not serve traffic; will be destroyed after    │
+   │  the bot-vm soak (~1 week from 2026-05-12).         │
+   └─────────────────────────────────────────────────────┘
 ```
 
 ### What shipped in v4.0
@@ -156,11 +167,11 @@ Out of scope for v4.0 (some now planned for v4.1+ — see §7):
 | Currently playing track | Lavalink (authoritative) | Lost on Lavalink restart |
 | Volume / loop mode (per guild) | Bot (in-memory) | Lost on bot restart |
 | Voice channel binding | Discord (bot maintains via Wavelink) | Lost on bot or Lavalink restart |
-| Lavalink VM lifecycle | GCE (TF-managed instance) | Persistent until stopped |
+| Lavalink VM lifecycle | bot-vm systemd (always-on) | Persistent — Lavalink runs continuously alongside the bot |
 
 The bot is the orchestrator; Lavalink is the audio engine; Discord is the transport. None of these survive their own restart cleanly. **We intentionally don't persist queue state** — losing 3 songs of context on a deploy is acceptable for a hobby bot. Reintroducing persistence is a separate ticket if it ever bites.
 
-### Lifecycle
+### Lifecycle (post-2026-05-12)
 
 ```
 User: /music play <song>
@@ -170,13 +181,10 @@ Bot cog: channel-scope check. If not #bot-spam → ephemeral redirect.
   │
   ▼
 Bot cog: ensure Lavalink reachable.
-  │
-  ├── Lavalink VM is RUNNING + bot has WebSocket → continue
-  │
-  └── Lavalink VM is TERMINATED → call services/compute.start_instance()
-      │     "Starting music server, ~30s..."
-      ▼
-      Wait until Lavalink WebSocket is open (with timeout)
+  │   (LAVALINK_HOST=localhost → "ensure VM running" path is skipped.
+  │    Lavalink is co-tenanted on this same VM and is always up. The
+  │    on-demand-start code path still exists for the standalone-VM
+  │    rollback case; the cog branches on the env-var.)
   │
   ▼
 Bot joins user's voice channel via Wavelink
@@ -194,22 +202,21 @@ Lavalink streams audio frames directly to Discord (UDP)
 On track end: bot's wavelink event handler pulls next from queue
   │
   ▼
-Queue empty + voice channel empty → bot disconnects voice (after 5min idle)
-                                  → idle watcher eventually stops Lavalink VM
+Queue empty + voice channel empty → bot disconnects voice (after 5min idle).
+                                  No Lavalink stop happens; Lavalink stays up
+                                  for the next /music play.
 ```
 
 ### Failure modes (and what we do about each)
 
 | Failure | Handling |
 |---|---|
-| Lavalink VM stopped, user runs `/music play` | Bot starts the VM, defers + waits up to 60s for WebSocket. If still not ready, ephemeral "Lavalink slow to start, try again in a minute." |
 | User not in a voice channel | Ephemeral "Join a voice channel first, then re-run." |
 | YouTube query returns nothing | Ephemeral "No results for that." |
 | Track fails mid-play (404, region lock, etc.) | Skip silently to next track in queue; log warning. |
-| Bot restarts mid-playback | Bot re-establishes Wavelink WebSocket; current track is lost (queue too); user must re-`/music play`. |
-| Lavalink restarts mid-playback (rare — only on VM stop/start) | Same as above. |
-| Idle watcher stops Lavalink VM during silence | Next `/music play` triggers VM start automatically. ~30s cold start. |
-| Lavalink VM gets stopped + started again at a new public IP, bot has stale node session | **Open hardening item.** Today: bot bounce required. Planned: `_ensure_node_connected` adds a `/v4/info` health check that detects stale sessions and forces a fresh `Pool.connect`. Tracked in §7 as the next bot-side priority. |
+| Bot restarts mid-playback | Bot re-establishes Wavelink WebSocket; current track is lost (queue too); user must re-`/music play`. Watchdog (`bot-watchdog.timer`) restarts the bot on 5 consecutive `/livez` 503s — equivalent of Cloud Run's kill-and-replace. |
+| Lavalink restarts mid-playback (rare — only on `systemctl restart lavalink` or VM reboot) | Same as above. With Lavalink co-tenanted on the same VM, this is now only triggered by config changes (`terraform apply` re-rendering `application.yml`) or the bot-vm reboots; idle-watcher-induced restarts are gone. |
+| Lavalink endpoint changes (used to: VM stop/start → new public IP, stale node session) | **No longer applies** post-co-tenancy. The bot points at `localhost:2333`, which doesn't change. The stale-session handling in `services/music.py` (`_drop_stale_node` + `/v4/info` health check) is retained for the rollback-to-standalone-VM case. |
 
 ### Wavelink integration boundary
 
@@ -426,6 +433,7 @@ Decisions captured here so future-us doesn't re-litigate.
 | 2026-05-09 | **`/livez` freshness signal: `on_socket_event_type` → `KeepAliveHandler._last_recv`** | Regression I shipped yesterday: the freshness signal used a custom `on_socket_event_type` listener which only fires for DISPATCH ops, NOT heartbeats. Quiet guild stretches (no message/presence activity) made the timestamp go stale within 90s even though the WS was fine. After 5 consecutive 503s Cloud Run kill-looped the bot every ~5 min during low-traffic periods. Fix: read discord.py's KeepAliveHandler `_last_recv` directly — that attribute is bumped via `tick()` on every received WS message of any kind (heartbeat ACKs, DISPATCH, reconnect signals). Discord sends heartbeats every ~41s so `_last_recv` stays fresh on a healthy connection regardless of guild activity. Hotfix while rolling out: temporarily point probe at `/health` (always 200) to break the kill loop; restore to `/livez` once the new code revision is verified. |
 | 2026-05-09 | **youtube-plugin: 1.13.5 → 1.18.1** | User reported songs cutting at 12-13s. youtube-plugin 1.13.5 had broken on certain YouTube response shapes. Bumped to 1.18.1 in `server/lavalink/application.yml`; Lavalink VM picks up new plugin on next cold-start (downloaded from Maven repo at JVM boot). |
 | 2026-05-10 | **`_drop_stale_node` uses Wavelink's `close(eject=True)` (was no-op pop on a copy)** | Bug present since the 2026-05-04 stale-session detection landed: `wavelink.Pool.nodes` is a `classproperty` that returns `cls.__nodes.copy()` — a throwaway dict. Our `Pool.nodes.pop(_NODE_IDENTIFIER, None)` was popping from the copy, NEVER affecting the real `_Pool__nodes` dict. So old identifiers stayed registered indefinitely; subsequent `Pool.connect(new_node)` either silently rejected or got into a confused state where the WS handshake never completed. User-visible: every Lavalink VM-cycle required a manual Cloud Run bounce to clear in-memory state. Confirmed via `wavelink.Pool.nodes is wavelink.Pool._Pool__nodes` returning False at runtime. Fix: `await node.close(eject=True)` (the `eject` param, added in Wavelink 3.2.1, makes `close()` itself remove from the real `_Pool__nodes`). Defensive fallback also touches `_Pool__nodes` via name-mangling if `close()` raises pre-eject — private API, accept the version-coupling risk to avoid stuck Pool state. |
+| 2026-05-12 | **Bot + Lavalink folded onto a single always-on `e2-small` (gcp-bot-vm), Cloud Run scaled to 0** | Cost analysis (recalibrated from the wrongly-low $23-36/mo guess to actual $72-77/mo): Cloud Run `min=1` for the bot ran ~$13/mo, Lavalink standalone e2-small idle ran ~$35/mo, and there was no UX win from running Lavalink on-demand — every first `/music play` of a session paid 60-90s cold-start. Co-tenancy onto one e2-small saves ~$35/mo AND eliminates the cold-start: bot talks to Lavalink at `localhost:2333` (no firewall hop, JVM is always warm). Trade-offs: (a) single VM is now a SPOF for both features, accepted given hobby scale and the existing systemd watchdog; (b) bot deploy mechanism shifts from Cloud Build → Cloud Run revision to manual `ssh; git pull; poetry install; systemctl restart bot` — fine for friend-group cadence (deploys every few days at most). Cutover was parallel-new: TF created the new VM with bot+Lavalink already running, Cloud Run was scaled to `min=0` to release the Discord gateway WS, the new VM took over instantly (single-IDENTIFY window, no double-session race). Idle watcher's Lavalink target was dropped via `count=` conditional in the same apply. Cloud Run service is kept at `min=0, max=1` as a rollback option (one-line flip back to `min=1`) for ~1 week; gcp-lavalink-vm module is kept for the same reason. After the soak: destroy both. Several incidental fixes shipped with the migration: Python pin relaxed from `^3.12` → `^3.11` for Debian 12 compatibility; google-auth pinned `>=2.46` via post-`poetry install` pip upgrade in the startup-script (2.45.0 had an `_prepare_request_for_mds` regression that crashed `SecretManagerServiceClient()` on GCE); bot.env render switched from `file()` → `templatefile()` so `${var}` placeholders actually substitute (initial cut crashed in Pydantic parsing `${valheim_status_http_port}` as an int); systemd watchdog (`bot-watchdog.timer` curling `/livez` every 60s; 5 consecutive 503s → `systemctl restart bot`) replicates Cloud Run's `liveness_probe` kill-and-replace mechanic. |
 
 ---
 

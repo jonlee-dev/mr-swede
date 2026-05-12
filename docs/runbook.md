@@ -19,29 +19,64 @@ sudo journalctl -u valheim-fetch-secrets -e -n 50
 sudo docker compose -f /opt/valheim/docker-compose.yml logs --tail 200
 sudo docker compose -f /opt/valheim/docker-compose.yml ps
 
-# Lavalink VM
-gcloud compute ssh lavalink-server --tunnel-through-iap --zone "$ZONE" --project "$PROJECT_ID"
+# Bot + Lavalink VM (gcp-bot-vm; always-on; 2026-05-12 onward)
+gcloud compute ssh bot-vm --tunnel-through-iap --zone "$ZONE" --project "$PROJECT_ID"
+# Bot
+sudo systemctl status bot
+sudo journalctl -u bot -e -n 200
+sudo journalctl -u bot-fetch-secrets -e -n 50
+sudo systemctl list-timers bot-watchdog.timer
+curl -s localhost:8080/livez ; echo   # bot's liveness endpoint (watchdog target)
+# Lavalink (same VM, localhost only)
 sudo systemctl status lavalink
 sudo journalctl -u lavalink -e -n 200
 sudo journalctl -u lavalink-fetch-secrets -e -n 50
+# Deploy a new bot revision (manual; replaces the Cloud Run trigger):
+#   cd /opt/mr-swede && sudo -u bot git pull && \
+#   sudo -u bot bash -c 'cd bot && poetry install --no-interaction --no-root' && \
+#   sudo systemctl restart bot
 
-# Bot (Cloud Run)
-gcloud run services logs read mr-swede --region=us-central1 --limit=100
+# Bot — legacy Cloud Run service (kept at min=0 as a rollback only)
+gcloud run services describe mr-swede --region=us-central1
+# To roll back to Cloud Run: set min=1 in infra/envs/prod (or module variables),
+# `terraform apply`, then SSH to bot-vm and `sudo systemctl stop bot` so the new
+# Cloud Run revision can claim the Discord gateway WS without a double-session race.
 
-# Idle watcher (multi-target Cloud Function)
+# Lavalink — retired standalone VM (gcp-lavalink-vm)
+# Still applied as of 2026-05-12; scheduled for destroy after the bot-vm soak.
+
+# Idle watcher (single-target since 2026-05-12 — Valheim only)
 gcloud functions logs read valheim-idle-watcher --region=us-central1 --limit=20
 gcloud scheduler jobs run valheim-idle-watcher-tick --location=us-central1   # fire manually
 gsutil cat gs://${PROJECT_ID}-idle-watcher-state/state-valheim.json
-gsutil cat gs://${PROJECT_ID}-idle-watcher-state/state-lavalink.json
 ```
 
 ## Scenarios
 
 ### 1. Bot deploy is failing
 
-1. Check the `CI` workflow in GitHub Actions.
-2. If image build fails: reproduce locally with `cd bot && docker build .`.
-3. If Cloud Run rollout fails: inspect the failing revision's logs in Cloud Run.
+Post-2026-05-12: deploy is `git pull + poetry install + systemctl
+restart bot` on the bot-vm — see runbook §16. There's no Cloud Run
+rollout to inspect.
+
+1. Check the `CI` workflow in GitHub Actions — `poetry install` /
+   `pytest` failures will block before you even push.
+2. If `poetry install` on the VM fails (typically after a dep bump):
+   ```bash
+   sudo journalctl -u bot -e -n 200
+   cd /opt/mr-swede/bot
+   sudo -u bot poetry install --no-interaction --no-root
+   ```
+   The most common cause is `poetry.lock` drift; regenerate locally
+   and commit, or hand-pin via `pip install` as we did with
+   google-auth (see runbook §15).
+3. If `bot.service` starts but exits with an import or pydantic
+   error, check `/etc/bot/bot.env` for unrendered `${var}` placeholders
+   (would mean `templatefile()` lost a key — `terraform apply` to
+   re-render and reboot the VM, OR hand-edit + restart for an
+   urgent fix).
+4. Legacy Cloud Run rollout (only while the service is at `min=1`
+   for rollback): inspect the failing revision's logs in Cloud Run.
 
 ### 1.5 Boot disk full / `df` shows 100% / Docker `prune` reclaims 0B
 
@@ -268,21 +303,44 @@ per-target as `state-<target>.json` in the watcher's state bucket.
 
 ### 9. /music play fails with "no nodes are currently CONNECTED" or hangs
 
-The bot caches the Wavelink node connection across requests. When the
-Lavalink VM gets restarted (e.g. after the idle watcher stops it and
-the next `/music play` brings it back up at a new public IP), the
-cached connection is stale.
+Post-2026-05-12 co-tenancy: the bot connects to Lavalink at
+`localhost:2333` on the same VM. Both services are started by systemd
+on boot; `bot.service` has `Requires=lavalink.service` so Lavalink
+comes up first. The stale-node failure mode that used to be triggered
+by the idle watcher stopping Lavalink is gone.
 
-1. Check `gcloud functions logs read valheim-idle-watcher --region=us-central1` — if it just stopped Lavalink, that's the cause.
-2. Check Lavalink itself is up: `curl http://<lavalink-vm-public-ip>:2333/v4/info -H "Authorization: $LAVALINK_PASSWORD"` should return JSON.
-3. Bounce the bot revision to clear the cached node:
+If you still hit this:
+
+1. SSH to `bot-vm` and check Lavalink directly:
    ```bash
-   gcloud run services update mr-swede --region=us-central1 \
-     --update-env-vars=BOT_BOUNCE=$(date +%s)
+   sudo systemctl status lavalink
+   sudo journalctl -u lavalink -e -n 100
+   curl -s -H "Authorization: $(sudo cat /etc/lavalink/secret.env | \
+     grep LAVALINK_SERVER_PASSWORD | cut -d= -f2)" \
+     http://localhost:2333/v4/info
    ```
-   (This forces a new revision; the new instance reconnects fresh.) The
-   stale-session detection improvement in the bot's `_ensure_node_connected`
-   should remove the need for this manual bounce going forward.
+   If Lavalink is dead, restart it (`sudo systemctl restart lavalink`)
+   and the bot's `_ensure_node_connected` should reconnect on the
+   next `/music play`.
+
+2. Check the bot itself:
+   ```bash
+   sudo systemctl status bot
+   sudo journalctl -u bot -e -n 100 | grep -iE 'wavelink|lavalink|node'
+   curl -s localhost:8080/livez
+   ```
+   If `/livez` is returning 503 the bot's gateway is wedged; the
+   watchdog (`bot-watchdog.timer`) will restart the bot after 5
+   consecutive failures (~5min). Force-restart with
+   `sudo systemctl restart bot` to short-circuit.
+
+3. If everything looks healthy but `/music play` still fails:
+   ```bash
+   sudo systemctl restart bot
+   ```
+   Wipes any in-memory Wavelink Pool state. The
+   `_drop_stale_node` fix shipped 2026-05-10 should make this
+   rarely necessary, but it's the cheapest hammer.
 
 ### 10. Spotify URLs fail to resolve (`couldn't resolve that Spotify URL` or "no source for that URL")
 
@@ -291,7 +349,7 @@ shapes; check both:
 
 1. **Spotify source isn't enabled.** The fetch-secrets script gates
    lavasrc Spotify behind the presence of the `spotify-client-credentials`
-   secret. SSH to the Lavalink VM and check:
+   secret. SSH to `bot-vm` (Lavalink is co-tenanted there) and check:
 
    ```bash
    sudo cat /etc/lavalink/secret.env | grep LAVASRC_SPOTIFY
@@ -300,7 +358,8 @@ shapes; check both:
    If you see `LAVASRC_SPOTIFY_ENABLED=false`, the secret either has no
    versions yet or fetch-secrets couldn't reach it. Seed (or re-seed)
    per [`docs/bootstrap.md`](bootstrap.md#spotify-developer-app-credentials-optional)
-   then `gcloud compute instances reset lavalink-server`.
+   then re-run lavalink-fetch-secrets + restart lavalink:
+   `sudo systemctl restart lavalink-fetch-secrets.service lavalink.service`.
 
 2. **Credentials are seeded but Spotify is rejecting the request.**
    Likely a stale or revoked client_secret. Check Lavalink's logs:
@@ -312,7 +371,7 @@ shapes; check both:
    `401 Unauthorized` on the token-exchange URL = bad credentials.
    Rotate the Spotify Developer App secret (the dashboard at
    developer.spotify.com lets you regenerate), seed the new value via
-   GSM, reset the Lavalink VM.
+   GSM, then `sudo systemctl restart lavalink-fetch-secrets.service lavalink.service`.
 
    `429 Too Many Requests` = rate limit. Spotify's client-credentials
    tier has a generous quota; if we're hitting it our usage exploded.
@@ -477,5 +536,129 @@ Almost always a Discord-voice-protocol-versions mismatch. Known good combo:
 - `discord.py[voice]` extra installed (PyNaCl required) and `wavelink ^3.5.0` (sends `channelId` + DAVE)
 - JVM flag `-Djava.net.preferIPv4Stack=true` (prevents silent IPv6 hangs on GCE)
 - `openjdk-17-jre-headless` (Lavalink 4.x rejects 21+ in some configs)
+
+### 14. Bot is wedged (gateway WS dropped, slash commands hanging) on bot-vm
+
+Replaces the Cloud Run "force a new revision" recipe. On bot-vm the
+equivalent is restarting the systemd unit.
+
+1. SSH to bot-vm and check `/livez`:
+   ```bash
+   gcloud compute ssh bot-vm --tunnel-through-iap --zone us-central1-a --project mr-swede
+   curl -s localhost:8080/livez; echo
+   ```
+   `{"alive":false,...}` (HTTP 503) = bot's WS is closed or stale
+   (>90s since last gateway event). `bot-watchdog.timer` curls this
+   every 60s and will `systemctl restart bot` after 5 consecutive
+   failures (~5min). To short-circuit:
+   ```bash
+   sudo systemctl restart bot
+   ```
+
+2. Check the watchdog timer is actually scheduled:
+   ```bash
+   sudo systemctl list-timers bot-watchdog.timer
+   sudo journalctl -u bot-watchdog.service -e -n 100
+   sudo cat /var/lib/bot-watchdog/consecutive-failures   # current counter
+   ```
+   If `consecutive-failures` is wedged at a number >5 but the bot
+   never got restarted, the timer is probably masked/stopped:
+   `sudo systemctl enable --now bot-watchdog.timer`.
+
+3. If `bot.service` itself keeps crash-looping (`systemctl status bot`
+   shows "activating (auto-restart)" repeatedly):
+   ```bash
+   sudo journalctl -u bot -e -n 300
+   sudo journalctl -u bot-fetch-secrets -e -n 50
+   ```
+   Common causes:
+   - `bot-fetch-secrets.service` failed → secrets.env missing →
+     bot Pydantic-fails on missing `DISCORD_BOT_TOKEN`. Check that
+     `mr-swede-sa` still has `roles/secretmanager.secretAccessor` on
+     `discord-bot-secrets` (`terraform apply` should be sufficient).
+   - `google-auth` regression — see runbook §15.
+   - poetry venv is broken after a `git pull` that changed
+     `pyproject.toml`. Rebuild:
+     ```bash
+     cd /opt/mr-swede/bot
+     sudo -u bot poetry install --no-interaction --no-root
+     sudo -u bot /opt/mr-swede/bot/.venv/bin/pip install --upgrade "google-auth>=2.46"
+     sudo systemctl restart bot
+     ```
+
+### 15. Bot crashes on boot with `AttributeError: 'Request' object has no attribute 'session'`
+
+google-auth 2.45.0 regression in `_prepare_request_for_mds`. Surfaces
+during `SecretManagerServiceClient()` init on GCE. The startup-script
+already pins `>=2.46` via `pip install --upgrade` after `poetry
+install`, so this should not bite on a fresh boot — but if you've
+manually downgraded the venv or hit the bug pre-fix:
+
+```bash
+sudo -u bot /opt/mr-swede/bot/.venv/bin/pip install --upgrade "google-auth>=2.46"
+sudo systemctl restart bot
+```
+
+Durable fix is to regenerate `poetry.lock` with `google-auth>=2.46`
+pinned in `pyproject.toml`; we haven't because Poetry isn't installed
+on the Windows host. Whenever that changes, drop the `pip install`
+line from `server/bot-vm/startup-script.sh.tftpl`.
+
+### 16. Bot deploy — manual flow on bot-vm
+
+Replaces Cloud Build's auto-deploy-on-master trigger. The Cloud Build
+trigger is still wired up via `gcp-bot-runtime` (it pushes a new image
+to Artifact Registry on every master commit) but the deployed Cloud
+Run service is at `min=0`, so it doesn't pick up the new image.
+
+To ship a bot change to production:
+
+```bash
+gcloud compute ssh bot-vm --tunnel-through-iap --zone us-central1-a --project mr-swede
+cd /opt/mr-swede
+sudo -u bot git pull
+# Only if pyproject.toml / poetry.lock changed:
+sudo -u bot bash -c 'cd bot && poetry install --no-interaction --no-root'
+sudo systemctl restart bot
+sudo journalctl -u bot -f   # watch it come up; ctrl-c when "Bot ready" appears
+curl -s localhost:8080/livez; echo
+```
+
+Rollback is just `git checkout <prev-sha>` + `systemctl restart bot`.
+There's no image registry to clean up because we run from source.
+
+### 17. Roll back to Cloud Run
+
+For the ~1 week soak (or longer if needed), `gcp-bot-runtime` is kept
+at `min=0, max=1`. To restore traffic:
+
+1. Bump min_instances to 1 in `infra/envs/prod/terraform.tfvars` (or
+   pass via the module input):
+   ```hcl
+   module "bot_runtime" {
+     # ...
+     min_instances = 1
+   }
+   ```
+   `terraform apply`.
+
+2. **Before the new Cloud Run revision finishes coming up**, stop the
+   bot on bot-vm so the Discord gateway WS is released:
+   ```bash
+   gcloud compute ssh bot-vm --tunnel-through-iap --zone us-central1-a --project mr-swede
+   sudo systemctl stop bot
+   sudo systemctl disable bot bot-watchdog.timer   # prevent the watchdog from restarting it
+   ```
+   If you don't do this, both replicas will try to hold the gateway
+   WS simultaneously and Discord will throw IDENTIFY rate limits.
+
+3. Verify in Cloud Run logs that the bot started cleanly and is
+   serving `/livez`:
+   ```bash
+   gcloud run services logs read mr-swede --region=us-central1 --limit=50
+   ```
+
+Re-cutover to bot-vm is the reverse (enable+start the bot service on
+bot-vm; scale Cloud Run back to 0).
 
 If you're debugging a regression: hit Lavalink directly with `curl /v4/info` and check the version, then check the bot's `pyproject.toml` for the wavelink pin. Mismatches usually surface as Discord close codes 4003 (auth) or 4017 (E2EE required) in the Lavalink logs.
