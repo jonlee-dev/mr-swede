@@ -114,15 +114,25 @@ CI runs `fmt → validate → plan` on every PR touching `infra/**` and runs `ap
 
 ### Cost estimate
 
-| Component | ~Monthly |
-|---|---|
-| Cloud Run bot (min-instances=1, CPU always-on) | $15–20 |
-| Valheim VM (e2-standard-2, stopped most of the time) | $5–10 |
-| Lavalink VM (e2-small, stopped most of the time) | $1–3 |
-| Persistent disk (20GB pd-balanced, Valheim only — Lavalink is stateless) | ~$2 |
-| Snapshots + GCS backups | <$1 |
-| Idle watcher (Cloud Function + Scheduler) | <$0.05 |
-| **Total** | **~$23–36** |
+Numbers below are calibrated against 8 days of real usage data
+(2026-05-02 → 2026-05-10) — see `docs/prd.md` decisions log entry
+2026-05-10 for the full breakdown.
+
+| Component | ~Monthly | Notes |
+|---|---|---|
+| Cloud Run bot (`min=max=1`, `cpu_idle=false`, 1 vCPU + 512 Mi) | ~$45 | Always-on CPU is mandatory: Discord gateway is a long-lived WebSocket, not request/response. us-central1 Tier 1 rate × 2.59M vCPU-s/mo minus free tier. |
+| Valheim VM (e2-standard-2, ~7 hr/day measured) | ~$14 | $0.067/hr. Idle-watcher stops after 90-120 min idle; saves ~$34/mo vs always-on ($48). |
+| Lavalink VM (e2-small, ~3.6 hr/day measured) | ~$1.50 | $0.014/hr. Idle-watcher saves ~$8.50/mo vs always-on ($10). |
+| Persistent disks (30 GB boot + 20 GB data on Valheim, 10 GB boot on Lavalink) | ~$6 | pd-balanced at $0.10/GB-mo. Billed regardless of VM state. |
+| Egress (Discord WSS heartbeats + voice UDP + Valheim game traffic) | ~$5-10 | Highly usage-dependent. Voice/game traffic dominates when actively played. |
+| Idle watcher (Cloud Function + Scheduler) | <$0.05 | Under free tier — 30-min cron, <2s execution per tick. |
+| Artifact Registry (bot image) | ~$0.50 | ~5 GB stored |
+| **Total at current usage** | **~$72-77/mo** | |
+
+**Optimization knobs** (none worth pulling at current scale):
+
+- *Skip idle-watcher* → +$40/mo, no operator action required after a session, no cold-start UX cost. Not worth.
+- *Move bot off Cloud Run to e2-small VM* → -$35/mo, lose Cloud Build auto-deploy + Cloud Run's `/livez` kill-and-replace + zero-ops managed restart. Would need to rebuild equivalents in systemd. Worth revisiting only if cost becomes an actual pain point.
 
 The two big costs are the bot's always-on CPU and the on-demand VMs running 24/7. The idle watcher cuts each VM bill by ~70-80% in practice — it stops a VM after 60-90 minutes of zero players, so the cost table assumes ~3 hours of daily usage per VM rather than 24/7. The bot uses `cpu_idle = false` because Discord delivers slash commands over a WebSocket gateway (not over Cloud Run's HTTP port) — a CPU-throttled service starves the worker thread doing TLS handshakes from `/valheim *` and `/music *` calls. See [`infra/modules/gcp-bot-runtime/service.tf`](infra/modules/gcp-bot-runtime/service.tf) for the full reasoning.
 
