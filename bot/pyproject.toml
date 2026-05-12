@@ -7,7 +7,13 @@ readme = "README.md"
 packages = [{include = "src"}]
 
 [tool.poetry.dependencies]
-python = "^3.12"
+# ^3.11 admits both 3.11 (Debian 12's stock Python, used on the
+# bot-vm) and 3.12 (the python:3.12-slim image we used on Cloud Run
+# and the GitHub Actions CI runner). 2026-05-10 migration: the VM
+# rendered "3.12 not available" since Debian 12 ships 3.11 and
+# installing a newer Python is non-trivial; the bot doesn't use
+# any 3.12-only syntax so the version floor moves down to 3.11.
+python = "^3.11"
 # Discord with voice extras (PyNaCl). Even though Lavalink streams the
 # actual audio frames to Discord, discord.py's voice handshake still
 # requires PyNaCl to encrypt the voice gateway negotiation. Without
@@ -93,7 +99,12 @@ ignore = [
 known-first-party = ["src"]
 
 [tool.mypy]
-python_version = "3.12"
+# Lowest supported version (per tool.poetry.dependencies). mypy uses
+# this to gate features available on the target Python, so checking
+# against 3.11 catches any 3.12-only syntax that would break the
+# bot-vm's stock Debian Python. CI still runs the actual tests on
+# 3.12 so we get coverage on both versions.
+python_version = "3.11"
 warn_return_any = true
 warn_unused_ignores = true
 disallow_untyped_defs = true
