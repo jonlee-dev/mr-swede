@@ -1,0 +1,14 @@
+[Unit]
+Description=Bot liveness probe (curls /livez, restarts bot on N consecutive failures)
+# This is the unit that DOES the probe each time the timer fires.
+# Doesn't depend on bot.service running -- if bot is down we want
+# the watchdog to notice and potentially trigger systemctl restart.
+
+[Service]
+Type=oneshot
+ExecStart=/opt/mr-swede/scripts-bot-watchdog.sh
+# Watchdog must NOT fail loudly when bot is down -- exit 0 even on
+# probe failure since the script handles state internally. systemd
+# would otherwise mark the watchdog unit as failed and stop
+# scheduling it, which is the opposite of what we want.
+SuccessExitStatus=0 1

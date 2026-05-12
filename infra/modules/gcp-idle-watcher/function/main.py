@@ -53,13 +53,19 @@ VALHEIM_ZONE = os.environ["VALHEIM_ZONE"]
 VALHEIM_INSTANCE = os.environ["VALHEIM_INSTANCE_NAME"]
 VALHEIM_STATUS_HTTP_PORT = int(os.environ["VALHEIM_STATUS_HTTP_PORT"])
 
-# Lavalink target. The password is read at function-startup time from
-# GSM and held in module scope -- fetching it on every tick would be
-# wasteful and the password rotates infrequently.
-LAVALINK_ZONE = os.environ["LAVALINK_ZONE"]
-LAVALINK_INSTANCE = os.environ["LAVALINK_INSTANCE_NAME"]
-LAVALINK_PORT = int(os.environ["LAVALINK_PORT"])
-LAVALINK_PASSWORD_SECRET_PATH = os.environ["LAVALINK_PASSWORD_SECRET_PATH"]
+# Lavalink target. OPTIONAL since the 2026-05-10 migration -- when
+# Lavalink moved to always-on co-tenancy with the bot, the watcher
+# stopped needing to manage its lifecycle. Empty LAVALINK_INSTANCE_NAME
+# (set by the TF module when no Lavalink target is configured) means
+# we skip the lavalink TARGETS entry entirely.
+#
+# The password is read at function-startup time from GSM and held in
+# module scope -- fetching it on every tick would be wasteful and the
+# password rotates infrequently.
+LAVALINK_ZONE = os.environ.get("LAVALINK_ZONE", "")
+LAVALINK_INSTANCE = os.environ.get("LAVALINK_INSTANCE_NAME", "")
+LAVALINK_PORT = int(os.environ.get("LAVALINK_PORT", "2333"))
+LAVALINK_PASSWORD_SECRET_PATH = os.environ.get("LAVALINK_PASSWORD_SECRET_PATH", "")
 
 
 def _fetch_secret(path: str) -> str:
@@ -150,11 +156,16 @@ def _probe_lavalink(public_ip: str) -> bool | None:
 # Targets
 # ---------------------------------------------------------------------------
 
-# Each target: (name_for_logs+state_key, zone, instance, probe_fn)
+# Each target: (name_for_logs+state_key, zone, instance, probe_fn).
+# Lavalink is included only when LAVALINK_INSTANCE_NAME is set (the
+# TF module passes "" when Lavalink target is disabled). Suppresses
+# spurious probes against a non-existent VM after the 2026-05-10
+# co-tenancy migration where Lavalink became always-on.
 TARGETS: list[tuple[str, str, str, Callable[[str], bool | None]]] = [
     ("valheim", VALHEIM_ZONE, VALHEIM_INSTANCE, _probe_valheim),
-    ("lavalink", LAVALINK_ZONE, LAVALINK_INSTANCE, _probe_lavalink),
 ]
+if LAVALINK_INSTANCE:
+    TARGETS.append(("lavalink", LAVALINK_ZONE, LAVALINK_INSTANCE, _probe_lavalink))
 
 
 @functions_framework.http

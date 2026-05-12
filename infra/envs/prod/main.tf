@@ -64,16 +64,45 @@ module "bot_runtime" {
   depends_on = [module.bootstrap, module.valheim_vm, module.lavalink_vm]
 }
 
+module "bot_vm" {
+  source = "../../modules/gcp-bot-vm"
+
+  project_id            = var.project_id
+  region                = var.region
+  zone                  = var.zone
+  vpc_self_link         = module.valheim_vm.vpc_self_link
+  subnet_self_link      = module.valheim_vm.subnet_self_link
+  service_account_email = module.bot_runtime.service_account_email
+
+  discord_secret_path          = module.bot_runtime.discord_secret_path
+  discord_guild_id             = var.discord_guild_id
+  music_command_channel_id     = var.music_command_channel_id
+  valheim_password_secret_path = module.bot_runtime.valheim_password_secret_path
+  valheim_instance_name        = module.valheim_vm.instance_name
+  valheim_zone                 = module.valheim_vm.instance_zone
+  lavalink_password_secret_id  = module.lavalink_vm.server_password_secret_id
+
+  bot_git_repo = "https://github.com/${var.github_owner}/${var.github_repo}.git"
+
+  # Allow the bot VM to come up before bot_runtime might tear down
+  # the Cloud Run service (during the 2026-05-10 migration window
+  # we keep the Cloud Run service scaled to 0 as a rollback option).
+  depends_on = [module.bootstrap, module.valheim_vm, module.lavalink_vm, module.bot_runtime]
+}
+
 module "idle_watcher" {
   source = "../../modules/gcp-idle-watcher"
 
-  project_id                  = var.project_id
-  region                      = var.region
-  valheim_instance_self_link  = module.valheim_vm.instance_self_link
-  lavalink_instance_self_link = module.lavalink_vm.instance_self_link
-  lavalink_port               = module.lavalink_vm.lavalink_port
-  lavalink_password_secret_id = module.lavalink_vm.server_password_secret_id
-  vm_controller_role_id       = module.bot_runtime.vm_controller_role_id
+  project_id                 = var.project_id
+  region                     = var.region
+  valheim_instance_self_link = module.valheim_vm.instance_self_link
+  vm_controller_role_id      = module.bot_runtime.vm_controller_role_id
+
+  # NOTE 2026-05-10: lavalink target REMOVED. Lavalink now runs
+  # on the bot_vm always-on (see module.bot_vm); no idle window,
+  # no auto-stop. The lavalink_instance_self_link variable is now
+  # optional on the gcp-idle-watcher module side (defaults to ""
+  # which suppresses the lavalink TARGETS entry).
 
   # Emergency off-switch: when true, the Cloud Scheduler job is paused
   # and no ticks fire. Use this when a probe regression has the watcher
@@ -82,8 +111,8 @@ module "idle_watcher" {
 
   # bootstrap enables cloudfunctions/cloudscheduler/eventarc/pubsub APIs
   # that this module consumes; bot_runtime owns the custom role we bind
-  # to; lavalink_vm provides the second target.
-  depends_on = [module.bootstrap, module.lavalink_vm, module.bot_runtime]
+  # to.
+  depends_on = [module.bootstrap, module.bot_runtime]
 }
 
 ###############################################################################

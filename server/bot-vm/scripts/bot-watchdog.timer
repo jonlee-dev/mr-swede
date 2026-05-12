@@ -1,0 +1,16 @@
+[Unit]
+Description=Bot liveness probe timer (fire bot-watchdog.service every 60s)
+
+[Timer]
+# First fire 30s after timer activation -- gives the bot's own
+# startup time on cold boot. Same as the Cloud Run probe's
+# initial_delay_seconds=30.
+OnActiveSec=30s
+# Then every 60s. 5 consecutive failures -> ~5 min unhealthy
+# before the bot is restarted by the watchdog script.
+OnUnitActiveSec=60s
+AccuracySec=5s
+Unit=bot-watchdog.service
+
+[Install]
+WantedBy=timers.target

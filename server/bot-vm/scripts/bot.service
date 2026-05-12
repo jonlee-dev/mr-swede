@@ -1,0 +1,45 @@
+[Unit]
+Description=Mr. Swede Discord bot
+# The bot needs:
+#   - network (Discord WSS, GCP APIs, Lavalink at localhost which is
+#     up by lavalink.service)
+#   - bot-fetch-secrets.service to have written /etc/bot/secrets.env
+#     so the bot has its Discord token and Lavalink password before
+#     it tries to authenticate
+#   - lavalink.service running locally so the bot can connect to
+#     localhost:2333 (the bot's connect_node has a 90s timeout and
+#     internal retries, so if lavalink is briefly slower this isn't
+#     fatal -- but ordering it ensures a happier first /music play)
+Requires=network-online.target bot-fetch-secrets.service lavalink.service
+After=network-online.target bot-fetch-secrets.service lavalink.service
+
+[Service]
+Type=simple
+User=bot
+Group=bot
+WorkingDirectory=/opt/mr-swede/bot
+
+# Bot configuration. bot.env has TF-templated static values
+# (LAVALINK_HOST, MUSIC_COMMAND_CHANNEL_ID, etc); secrets.env has
+# values fetched from Secret Manager at boot.
+EnvironmentFile=/etc/bot/bot.env
+EnvironmentFile=/etc/bot/secrets.env
+
+# The bot's entrypoint is the same uvicorn launcher we used on Cloud
+# Run. Use the in-project venv created by `poetry install`.
+ExecStart=/opt/mr-swede/bot/.venv/bin/python -m src.main
+
+# Restart on crash. The 2026-05-08 incident taught us that crash
+# detection alone isn't enough -- the bot can SILENTLY degrade
+# without crashing. The bot-watchdog.timer below handles the silent
+# case (curls /livez every 60s, restarts on 5 consecutive 503s).
+Restart=always
+RestartSec=10
+
+# Bot occasionally needs longer than systemd's default 1m30s to
+# shut down (discord.py voice cleanup can be slow). 3 minutes is
+# generous.
+TimeoutStopSec=180
+
+[Install]
+WantedBy=multi-user.target

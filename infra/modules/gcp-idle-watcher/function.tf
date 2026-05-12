@@ -29,7 +29,11 @@ data "google_project" "current" {
 }
 
 locals {
-  lavalink_password_secret_path = "projects/${data.google_project.current.number}/secrets/${var.lavalink_password_secret_id}/versions/latest"
+  # Only construct a real secret path when the Lavalink target is
+  # enabled (a non-empty lavalink_password_secret_id). When
+  # disabled (post-2026-05-10), this is "" and the function's
+  # Python uses os.environ.get(...,"") to skip the GSM read.
+  lavalink_password_secret_path = var.lavalink_password_secret_id != "" ? "projects/${data.google_project.current.number}/secrets/${var.lavalink_password_secret_id}/versions/latest" : ""
 }
 
 data "archive_file" "function_source" {
@@ -124,6 +128,9 @@ resource "google_cloudfunctions2_function" "watcher" {
 
   depends_on = [
     google_compute_instance_iam_member.watcher_can_admin_valheim_vm,
+    # Lavalink IAM bindings are count-based: 0 instances when the
+    # Lavalink target is disabled (2026-05-10 migration). TF
+    # tolerates depends_on against an empty resource collection.
     google_compute_instance_iam_member.watcher_can_admin_lavalink_vm,
     google_secret_manager_secret_iam_member.watcher_can_read_lavalink_password,
     google_storage_bucket_iam_member.watcher_can_rw_state,

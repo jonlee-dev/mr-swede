@@ -28,6 +28,11 @@ output "discord_secret_path" {
   value       = local.discord_secret_path
 }
 
+output "valheim_password_secret_path" {
+  description = "Full versioned secret path for the Valheim server password. The bot reads this at runtime for /valheim status (VALHEIM_PASSWORD_SECRET_PATH env var). Surfaced so gcp-bot-vm can pass it through to the bot's env file."
+  value       = local.valheim_password_secret_path
+}
+
 output "cloudbuild_trigger_id" {
   description = "ID of the Cloud Build trigger watching master. Useful for `gcloud builds triggers run`."
   value       = google_cloudbuild_trigger.bot_master.trigger_id

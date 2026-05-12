@@ -1,0 +1,208 @@
+#!/usr/bin/env bash
+# Startup script for the bot+Lavalink VM. Runs on EVERY boot via
+# google-guest-agent's metadata.startup-script handler. Idempotent.
+#
+# This file is a Terraform template -- $${...}-style placeholders are
+# interpolated by templatefile() in the gcp-bot-vm module. Embedded
+# files use base64 encoding inside heredocs.
+#
+# Co-tenancy layout:
+#   /opt/lavalink/   -- Lavalink JAR + plugins (same shape as the old
+#                       gcp-lavalink-vm VM; pre-migration runbook entries
+#                       still apply)
+#   /opt/mr-swede/   -- the bot's git clone + Python venv
+#   /etc/bot/        -- bot's env files (env, secrets.env)
+#   /etc/lavalink/   -- Lavalink's env files
+#
+# Boot sequence:
+#   1. Install JDK 17 + Python 3 + git + curl + unzip + python3-venv
+#      + poetry (first boot only; `command -v` short-circuits)
+#   2. Create unix users `lavalink` and `bot` for least-privilege
+#   3. Drop runtime files (every boot, idempotent overwrite)
+#   4. Clone or `git pull` /opt/mr-swede; rebuild venv if pyproject changed
+#   5. Drop the bot env file with TF-templated values
+#   6. systemctl daemon-reload + enable + restart units
+#
+# Logs at /var/log/bot-vm-startup-script.log + journal under
+# google-startup-scripts.service.
+
+set -euxo pipefail
+exec > >(tee -a /var/log/bot-vm-startup-script.log) 2>&1
+
+echo "=== bot-vm startup-script begin: $(date -u +%FT%TZ) ==="
+
+# ---------------------------------------------------------------------------
+# 1. apt deps
+# ---------------------------------------------------------------------------
+
+if ! command -v java >/dev/null 2>&1; then
+  echo "First-boot: installing JDK + Python + tooling"
+  apt-get update
+  DEBIAN_FRONTEND=noninteractive apt-get install -y \
+    openjdk-17-jre-headless \
+    python3 python3-venv python3-pip python3-poetry \
+    git curl ca-certificates jq unzip
+fi
+
+# Belt-and-suspenders: ensure these are present even if the docker
+# guard above didn't trigger (e.g., we added a dep after the VM
+# already had java installed).
+for tool in git curl jq unzip python3 python3-venv; do
+  if ! dpkg -s "$tool" >/dev/null 2>&1; then
+    DEBIAN_FRONTEND=noninteractive apt-get install -y "$tool"
+  fi
+done
+
+# ---------------------------------------------------------------------------
+# 2. system users
+# ---------------------------------------------------------------------------
+
+if ! id -u lavalink >/dev/null 2>&1; then
+  useradd --system --home /opt/lavalink --shell /usr/sbin/nologin lavalink
+fi
+if ! id -u bot >/dev/null 2>&1; then
+  useradd --system --home /opt/mr-swede --shell /usr/sbin/nologin bot
+fi
+
+# ---------------------------------------------------------------------------
+# 3. Lavalink: install jar, application.yml, systemd units
+# ---------------------------------------------------------------------------
+
+LAVALINK_VERSION="4.2.2"
+LAVALINK_JAR_URL="https://github.com/lavalink-devs/Lavalink/releases/download/$${LAVALINK_VERSION}/Lavalink.jar"
+
+mkdir -p /opt/lavalink /opt/lavalink/plugins /opt/lavalink/scripts /etc/lavalink
+
+INSTALLED_MARKER="/opt/lavalink/.installed-version"
+INSTALLED_VERSION=""
+[ -f "$INSTALLED_MARKER" ] && INSTALLED_VERSION="$(cat "$INSTALLED_MARKER")"
+
+if [ "$INSTALLED_VERSION" != "$LAVALINK_VERSION" ] || [ ! -f /opt/lavalink/Lavalink.jar ]; then
+  echo "Downloading Lavalink $${LAVALINK_VERSION} (was: $${INSTALLED_VERSION:-none})"
+  curl -fsSL --retry 3 -o /opt/lavalink/Lavalink.jar.new "$LAVALINK_JAR_URL"
+  mv /opt/lavalink/Lavalink.jar.new /opt/lavalink/Lavalink.jar
+  echo "$LAVALINK_VERSION" > "$INSTALLED_MARKER"
+fi
+
+base64 -d > /opt/lavalink/application.yml <<'__BOTVM_BLOB_EOF__'
+${base64encode(lavalink_application_yml)}
+__BOTVM_BLOB_EOF__
+chmod 0644 /opt/lavalink/application.yml
+
+base64 -d > /opt/lavalink/scripts/fetch-secrets.sh <<'__BOTVM_BLOB_EOF__'
+${base64encode(lavalink_fetch_secrets_sh)}
+__BOTVM_BLOB_EOF__
+chmod 0750 /opt/lavalink/scripts/fetch-secrets.sh
+
+base64 -d > /etc/systemd/system/lavalink.service <<'__BOTVM_BLOB_EOF__'
+${base64encode(lavalink_service)}
+__BOTVM_BLOB_EOF__
+chmod 0644 /etc/systemd/system/lavalink.service
+
+base64 -d > /etc/systemd/system/lavalink-fetch-secrets.service <<'__BOTVM_BLOB_EOF__'
+${base64encode(lavalink_fetch_secrets_service)}
+__BOTVM_BLOB_EOF__
+chmod 0644 /etc/systemd/system/lavalink-fetch-secrets.service
+
+# Static (non-secret) Lavalink env -- localhost bind enforced here.
+# Belt-and-suspenders: even if application.yml's server.address gets
+# accidentally set to 0.0.0.0, the firewall denies inbound 2333 from
+# the public internet so the surface remains closed.
+cat > /etc/lavalink/server.env <<'__BOTVM_BLOB_EOF__'
+SERVER_PORT=2333
+__BOTVM_BLOB_EOF__
+
+chown -R lavalink:lavalink /opt/lavalink
+
+# ---------------------------------------------------------------------------
+# 4. Bot: clone repo, build venv, drop systemd units
+# ---------------------------------------------------------------------------
+
+mkdir -p /opt/mr-swede /etc/bot
+
+BOT_REPO="${bot_git_repo}"
+BOT_REF="${bot_git_ref}"
+
+if [ ! -d /opt/mr-swede/.git ]; then
+  echo "Cloning bot repo $${BOT_REPO}"
+  # Clone shallow to save disk; deep history isn't useful on the VM.
+  git clone --depth 50 --branch "$${BOT_REF}" "$${BOT_REPO}" /opt/mr-swede.tmp
+  rm -rf /opt/mr-swede
+  mv /opt/mr-swede.tmp /opt/mr-swede
+fi
+
+# Build / refresh the Python venv for the bot. We use Poetry's
+# in-project venv so the path is stable and predictable. Poetry
+# detects when pyproject.lock changed and only reinstalls when
+# needed.
+chown -R bot:bot /opt/mr-swede
+cd /opt/mr-swede/bot
+sudo -u bot poetry config virtualenvs.in-project true
+sudo -u bot poetry install --no-interaction --no-root || {
+  # First-boot fallback: poetry might not be on bot's PATH;
+  # install via system poetry as bot user.
+  sudo -u bot env PATH=/usr/bin:/usr/local/bin:$PATH \
+    /usr/bin/poetry install --no-interaction --no-root
+}
+
+# Bot env file with all the TF-templated (non-secret) values.
+base64 -d > /etc/bot/bot.env <<'__BOTVM_BLOB_EOF__'
+${base64encode(bot_env_template)}
+__BOTVM_BLOB_EOF__
+chmod 0640 /etc/bot/bot.env
+chown root:bot /etc/bot/bot.env
+
+# Bot systemd units.
+base64 -d > /etc/systemd/system/bot.service <<'__BOTVM_BLOB_EOF__'
+${base64encode(bot_service)}
+__BOTVM_BLOB_EOF__
+chmod 0644 /etc/systemd/system/bot.service
+
+base64 -d > /opt/mr-swede/scripts-bot-fetch-secrets.sh <<'__BOTVM_BLOB_EOF__'
+${base64encode(bot_fetch_secrets_sh)}
+__BOTVM_BLOB_EOF__
+chmod 0750 /opt/mr-swede/scripts-bot-fetch-secrets.sh
+
+base64 -d > /etc/systemd/system/bot-fetch-secrets.service <<'__BOTVM_BLOB_EOF__'
+${base64encode(bot_fetch_secrets_service)}
+__BOTVM_BLOB_EOF__
+chmod 0644 /etc/systemd/system/bot-fetch-secrets.service
+
+# Bot watchdog (the systemd timer that curls /livez every 60s and
+# restarts the bot on 5 consecutive failures -- equivalent of Cloud
+# Run's liveness probe).
+base64 -d > /opt/mr-swede/scripts-bot-watchdog.sh <<'__BOTVM_BLOB_EOF__'
+${base64encode(bot_watchdog_sh)}
+__BOTVM_BLOB_EOF__
+chmod 0750 /opt/mr-swede/scripts-bot-watchdog.sh
+
+base64 -d > /etc/systemd/system/bot-watchdog.service <<'__BOTVM_BLOB_EOF__'
+${base64encode(bot_watchdog_service)}
+__BOTVM_BLOB_EOF__
+chmod 0644 /etc/systemd/system/bot-watchdog.service
+
+base64 -d > /etc/systemd/system/bot-watchdog.timer <<'__BOTVM_BLOB_EOF__'
+${base64encode(bot_watchdog_timer)}
+__BOTVM_BLOB_EOF__
+chmod 0644 /etc/systemd/system/bot-watchdog.timer
+
+# ---------------------------------------------------------------------------
+# 5. systemd: reload, enable, restart
+# ---------------------------------------------------------------------------
+
+systemctl daemon-reload
+
+# Lavalink: enable + restart unconditionally (idempotent; restart
+# picks up new application.yml / plugins on every TF apply).
+systemctl enable lavalink-fetch-secrets.service lavalink.service
+systemctl restart lavalink-fetch-secrets.service
+systemctl restart lavalink.service
+
+# Bot: enable + restart. fetch-secrets runs as a Requires= dep of
+# bot.service, so restarting bot triggers a fresh secret pull.
+systemctl enable bot-fetch-secrets.service bot.service bot-watchdog.timer
+systemctl restart bot-fetch-secrets.service
+systemctl restart bot.service
+systemctl restart bot-watchdog.timer
+
+echo "=== bot-vm startup-script complete: $(date -u +%FT%TZ) ==="

@@ -15,19 +15,21 @@ variable "valheim_instance_self_link" {
 }
 
 variable "lavalink_instance_self_link" {
-  description = "Full self_link of the Lavalink VM (from module.lavalink_vm.instance_self_link). Watcher polls /v4/players on this instance and stops it when idle."
+  description = "Full self_link of the Lavalink VM. Optional as of 2026-05-10 -- when empty, the watcher skips the Lavalink target entirely. We made Lavalink always-on (co-tenanted on the bot VM) in that migration, so there's no idle window to watch for. Kept as a variable rather than hard-removed so a future revert to a standalone Lavalink VM is a one-line change."
   type        = string
+  default     = ""
 }
 
 variable "lavalink_port" {
-  description = "TCP port Lavalink binds (from module.lavalink_vm.lavalink_port). Used to construct the /v4/players URL."
+  description = "TCP port Lavalink binds. Used only when lavalink_instance_self_link is set."
   type        = number
   default     = 2333
 }
 
 variable "lavalink_password_secret_id" {
-  description = "Secret Manager secret_id holding the Lavalink server password. The watcher reads this at cold-start to authenticate /v4/players requests."
+  description = "Secret Manager secret_id holding the Lavalink server password. Used only when lavalink_instance_self_link is set."
   type        = string
+  default     = ""
 }
 
 variable "vm_controller_role_id" {

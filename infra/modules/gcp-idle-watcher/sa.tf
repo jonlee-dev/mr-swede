@@ -36,8 +36,13 @@ locals {
   vm_zone = element(split("/", var.valheim_instance_self_link), 8)
   vm_name = element(split("/", var.valheim_instance_self_link), 10)
 
-  lavalink_vm_zone = element(split("/", var.lavalink_instance_self_link), 8)
-  lavalink_vm_name = element(split("/", var.lavalink_instance_self_link), 10)
+  # Lavalink target is OPTIONAL as of 2026-05-10. When
+  # lavalink_instance_self_link is "" we skip the zone/name parsing
+  # entirely; the watcher's Python ALSO sees empty
+  # LAVALINK_INSTANCE_NAME and skips the lavalink TARGETS entry.
+  lavalink_target_enabled = var.lavalink_instance_self_link != ""
+  lavalink_vm_zone        = local.lavalink_target_enabled ? element(split("/", var.lavalink_instance_self_link), 8) : ""
+  lavalink_vm_name        = local.lavalink_target_enabled ? element(split("/", var.lavalink_instance_self_link), 10) : ""
 }
 
 resource "google_compute_instance_iam_member" "watcher_can_admin_valheim_vm" {
@@ -48,8 +53,13 @@ resource "google_compute_instance_iam_member" "watcher_can_admin_valheim_vm" {
   member        = "serviceAccount:${google_service_account.watcher.email}"
 }
 
-# Same custom role on the Lavalink VM. Watcher controls both VMs.
+# Same custom role on the Lavalink VM -- only created when the
+# Lavalink target is configured. After the 2026-05-10 migration
+# where Lavalink became always-on (and the lavalink-server VM was
+# retired), this resource is suppressed.
 resource "google_compute_instance_iam_member" "watcher_can_admin_lavalink_vm" {
+  count = local.lavalink_target_enabled ? 1 : 0
+
   project       = var.project_id
   zone          = local.lavalink_vm_zone
   instance_name = local.lavalink_vm_name
@@ -57,9 +67,11 @@ resource "google_compute_instance_iam_member" "watcher_can_admin_lavalink_vm" {
   member        = "serviceAccount:${google_service_account.watcher.email}"
 }
 
-# Read access on the Lavalink password secret -- watcher needs to
-# authenticate to /v4/players when probing for active players.
+# Read access on the Lavalink password secret. Same conditional --
+# only granted when the Lavalink target is being watched.
 resource "google_secret_manager_secret_iam_member" "watcher_can_read_lavalink_password" {
+  count = local.lavalink_target_enabled ? 1 : 0
+
   project   = var.project_id
   secret_id = var.lavalink_password_secret_id
   role      = "roles/secretmanager.secretAccessor"
