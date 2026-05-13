@@ -627,7 +627,81 @@ curl -s localhost:8080/livez; echo
 Rollback is just `git checkout <prev-sha>` + `systemctl restart bot`.
 There's no image registry to clean up because we run from source.
 
-### 17. Roll back to Cloud Run
+### 17. Music dropped mid-session (Discord voice gateway issue)
+
+Symptom: bot is still in the voice channel and `/music nowplaying`
+shows a track, but no audio is reaching anyone. Bot logs are quiet
+because Wavelink doesn't surface a Koe-side voice transport reset.
+
+As of 2026-05-13 the bot has automatic recovery for this — you should
+see one of these in `#bot-spam` within ~5-10s of the dropout:
+
+  - 🔁 *"Audio dropped on **<track>**, reconnecting at <m:ss>…"* —
+    first wedge per track. Bot rebuilds the voice gateway session and
+    resumes the track at its previous position. **Audio should
+    return ~3-5s after this message.**
+  - ⏭️ *"Couldn't keep **<track>** playing (audio dropped after the
+    retry). Skipping."* — second wedge on the same track. Bot moves
+    to the next queued track. This usually means the track itself
+    is structurally bad; queue advances normally.
+
+If you DON'T see either message and music is silent for >15s:
+
+1. Check Lavalink for the Koe voice gateway error:
+   ```bash
+   sudo journalctl -u lavalink --since "5min ago" --no-pager | \
+     grep -iE 'koe|voice gateway|recvAddress'
+   ```
+   `Connection reset by peer` on `recvAddress(..)` is the classic
+   shape — Discord's voice UDP path dropped.
+
+2. Check the bot's heartbeat is running:
+   ```bash
+   sudo journalctl -u bot --since "5min ago" --no-pager | \
+     grep -iE 'voice heartbeat|wedge detected'
+   ```
+   You should see periodic activity from the heartbeat task. If
+   silence here means the heartbeat task crashed; restart the bot:
+   `sudo systemctl restart bot`.
+
+3. Manual recovery fallback (same effect as the auto-recovery, just
+   from the user's keyboard):
+   ```
+   /music stop      # tears down the voice session
+   /music play <whatever was playing>
+   ```
+
+4. If the voice gateway is broken at the Discord/network level (not
+   our bug), the auto-recovery will repeat-skip every track. In that
+   case `/music stop` + try again in a minute or two. Discord's
+   voice infra occasionally has transient incidents — see
+   <https://discordstatus.com>.
+
+### 18. Voice-recovery auto-skipped every track (Discord-side incident)
+
+Symptom: every track gets ⏭️-skipped within ~10s of starting. The
+recovery loop is firing correctly, but Discord's voice servers are
+sick at the network layer and we can't keep ANY session alive.
+
+Confirm:
+1. Check <https://discordstatus.com> for an active voice incident.
+2. `sudo journalctl -u lavalink -e -n 100 | grep -c recvAddress` — if
+   this returns >5 within a minute, you're seeing a systemic Discord
+   issue, not a bot bug.
+
+There's no useful auto-recovery; Discord has to fix it. Stop the bot
+out of the voice channel so it doesn't burn the IDENTIFY rate limit
+retrying:
+
+```
+/music stop
+```
+
+Try again in 15-30 minutes. If the incident is fixed and music still
+won't stay connected, `sudo systemctl restart bot` to clear any
+stuck per-track recovery state.
+
+### 19. Roll back to Cloud Run
 
 For the ~1 week soak (or longer if needed), `gcp-bot-runtime` is kept
 at `min=0, max=1`. To restore traffic:

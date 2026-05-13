@@ -57,7 +57,13 @@ lavalink:
     # Spotify playlists/albums are capped separately under
     # plugins.lavasrc.spotify.* below.
     youtubePlaylistLoadLimit: 100
-    playerUpdateInterval: 5
+    # Tightened from 5s -> 1s on 2026-05-13 so the bot's voice-health
+    # heartbeat (in bot/src/cogs/music.py) has a 1s-fresh signal to
+    # compare consecutive samples against. Costs nothing at hobby scale:
+    # one playerUpdate per second per active player on a localhost
+    # link. Also unblocks a smoother "now-playing" progress widget in
+    # a future PR (see PRD decision log 2026-05-13).
+    playerUpdateInterval: 1
     youtubeSearchEnabled: true
     soundcloudSearchEnabled: false
     gc-warnings: true
