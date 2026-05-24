@@ -42,7 +42,7 @@ from src.config.logging import get_logger
 from src.config.secrets import get_secrets
 from src.config.settings import get_settings
 from src.services import music
-from src.utils.checks import requires_channel
+from src.utils.checks import requires_channel, requires_guild
 
 logger = get_logger(__name__)
 
@@ -623,11 +623,8 @@ class MusicCog(commands.GroupCog, name="music"):
 
     @app_commands.command(name="skip", description="Skip the currently playing track")
     @requires_channel("music_command_channel_id")
+    @requires_guild
     async def skip(self, interaction: discord.Interaction) -> None:
-        await interaction.response.defer(thinking=True)
-        if interaction.guild is None:
-            await interaction.followup.send("Use this in a server channel.", ephemeral=True)
-            return
         if await music.skip(interaction.guild):
             await interaction.followup.send("Skipped.")
         else:
@@ -635,11 +632,8 @@ class MusicCog(commands.GroupCog, name="music"):
 
     @app_commands.command(name="pause", description="Pause playback")
     @requires_channel("music_command_channel_id")
+    @requires_guild
     async def pause(self, interaction: discord.Interaction) -> None:
-        await interaction.response.defer(thinking=True)
-        if interaction.guild is None:
-            await interaction.followup.send("Use this in a server channel.", ephemeral=True)
-            return
         if await music.pause(interaction.guild):
             await interaction.followup.send("Paused.")
         else:
@@ -647,11 +641,8 @@ class MusicCog(commands.GroupCog, name="music"):
 
     @app_commands.command(name="resume", description="Resume playback")
     @requires_channel("music_command_channel_id")
+    @requires_guild
     async def resume(self, interaction: discord.Interaction) -> None:
-        await interaction.response.defer(thinking=True)
-        if interaction.guild is None:
-            await interaction.followup.send("Use this in a server channel.", ephemeral=True)
-            return
         if await music.resume(interaction.guild):
             await interaction.followup.send("Resumed.")
         else:
@@ -659,11 +650,8 @@ class MusicCog(commands.GroupCog, name="music"):
 
     @app_commands.command(name="stop", description="Stop playback, clear queue, leave voice")
     @requires_channel("music_command_channel_id")
+    @requires_guild
     async def stop(self, interaction: discord.Interaction) -> None:
-        await interaction.response.defer(thinking=True)
-        if interaction.guild is None:
-            await interaction.followup.send("Use this in a server channel.", ephemeral=True)
-            return
         if await music.stop_and_disconnect(interaction.guild):
             await interaction.followup.send("Stopped and disconnected.")
         else:
@@ -671,11 +659,8 @@ class MusicCog(commands.GroupCog, name="music"):
 
     @app_commands.command(name="queue", description="Show the next ~10 queued tracks")
     @requires_channel("music_command_channel_id")
+    @requires_guild
     async def queue(self, interaction: discord.Interaction) -> None:
-        await interaction.response.defer(thinking=True)
-        if interaction.guild is None:
-            await interaction.followup.send("Use this in a server channel.", ephemeral=True)
-            return
         current = music.now_playing(interaction.guild)
         upcoming = music.queue_snapshot(interaction.guild, limit=10)
 
@@ -700,11 +685,8 @@ class MusicCog(commands.GroupCog, name="music"):
 
     @app_commands.command(name="nowplaying", description="Show the current track")
     @requires_channel("music_command_channel_id")
+    @requires_guild
     async def nowplaying(self, interaction: discord.Interaction) -> None:
-        await interaction.response.defer(thinking=True)
-        if interaction.guild is None:
-            await interaction.followup.send("Use this in a server channel.", ephemeral=True)
-            return
         current = music.now_playing(interaction.guild)
         if current is None:
             await interaction.followup.send("Nothing is playing.")
@@ -714,11 +696,8 @@ class MusicCog(commands.GroupCog, name="music"):
     @app_commands.command(name="volume", description="Set per-server playback volume (0-200)")
     @app_commands.describe(level="Volume percentage. 100 = normal, 200 = loud, 0 = mute.")
     @requires_channel("music_command_channel_id")
+    @requires_guild
     async def volume(self, interaction: discord.Interaction, level: int) -> None:
-        await interaction.response.defer(thinking=True)
-        if interaction.guild is None:
-            await interaction.followup.send("Use this in a server channel.", ephemeral=True)
-            return
         if await music.set_volume(interaction.guild, level):
             await interaction.followup.send(f"Volume set to {max(0, min(200, level))}%.")
         else:
@@ -726,11 +705,8 @@ class MusicCog(commands.GroupCog, name="music"):
 
     @app_commands.command(name="shuffle", description="Shuffle the queue in place")
     @requires_channel("music_command_channel_id")
+    @requires_guild
     async def shuffle(self, interaction: discord.Interaction) -> None:
-        await interaction.response.defer(thinking=True)
-        if interaction.guild is None:
-            await interaction.followup.send("Use this in a server channel.", ephemeral=True)
-            return
         n = await music.shuffle(interaction.guild)
         if n == 0:
             await interaction.followup.send("Queue is empty.", ephemeral=True)
@@ -746,11 +722,8 @@ class MusicCog(commands.GroupCog, name="music"):
         ]
     )
     @requires_channel("music_command_channel_id")
+    @requires_guild
     async def loop(self, interaction: discord.Interaction, mode: app_commands.Choice[str]) -> None:
-        await interaction.response.defer(thinking=True)
-        if interaction.guild is None:
-            await interaction.followup.send("Use this in a server channel.", ephemeral=True)
-            return
         if music.set_loop(interaction.guild, mode.value):
             await interaction.followup.send(f"Loop mode: **{mode.value}**.")
         else:

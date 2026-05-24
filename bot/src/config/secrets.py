@@ -20,13 +20,27 @@ Two distinct secrets:
 
 import json
 import os
+from collections.abc import Callable
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import Any
+from typing import Any, TypeVar
 
 from src.config.logging import get_logger
 
+T = TypeVar("T")
+
 logger = get_logger(__name__)
+
+
+def _parse_json(payload: bytes) -> dict[str, Any]:
+    """GSM payload -> JSON dict. Used for the multi-bot Discord secret."""
+    parsed: dict[str, Any] = json.loads(payload.decode("UTF-8"))
+    return parsed
+
+
+def _parse_string(payload: bytes) -> str:
+    """GSM payload -> stripped UTF-8 string. Used for plain passwords."""
+    return payload.decode("UTF-8").strip()
 
 
 @dataclass(frozen=True)
@@ -67,10 +81,11 @@ class SecretManager:
         self._project_id = project_id or os.environ.get("GCP_PROJECT_ID", "")
         self._discord_bot_name = discord_bot_name
         self._client: Any = None
-        # JSON-parsed cache (used for the discord secret).
-        self._json_cache: dict[str, Any] = {}
-        # Plain-string cache (used for the valheim password).
-        self._string_cache: dict[str, str] = {}
+        # Cache of parsed secret payloads, keyed by full resource path.
+        # Heterogeneous on purpose (dict for the Discord JSON secret,
+        # str for the plain-string secrets); `_fetch_secret` keys by
+        # path so JSON+string never collide.
+        self._cache: dict[str, Any] = {}
 
     @property
     def client(self) -> Any:
@@ -111,13 +126,25 @@ class SecretManager:
                 )
         return self.DEFAULT_SECRET_PATHS.get(secret_type, "")
 
-    def _fetch_secret_json(self, secret_path: str) -> dict[str, Any] | None:
-        """Fetch a JSON-parsed secret. Used for the multi-bot Discord secret."""
+    def _fetch_secret(
+        self,
+        secret_path: str,
+        parse: Callable[[bytes], T],
+    ) -> T | None:
+        """Fetch + parse a secret. Cached by path for the lifetime of
+        this SecretManager. Returns None when the path is empty, the
+        GSM client can't initialize, or parse/transport raises.
+
+        `parse` runs on the raw bytes of the secret payload. Pass
+        `_parse_json` for the Discord multi-bot blob, `_parse_string`
+        for plain passwords. The single fetch+cache path replaces the
+        previous two near-identical implementations.
+        """
         if not secret_path:
             logger.warning("Empty secret path provided")
             return None
-        if secret_path in self._json_cache:
-            cached: dict[str, Any] | None = self._json_cache[secret_path]
+        if secret_path in self._cache:
+            cached: T | None = self._cache[secret_path]
             return cached
         if not self.client:
             logger.error("Secret Manager client not available - cannot fetch secrets")
@@ -126,49 +153,17 @@ class SecretManager:
         logger.info("Fetching secret from GSM", path=secret_path)
         try:
             response = self.client.access_secret_version(request={"name": secret_path})
-            parsed: dict[str, Any] = json.loads(response.payload.data.decode("UTF-8"))
-            self._json_cache[secret_path] = parsed
-            logger.info("Loaded secret", path=secret_path, keys=list(parsed.keys()))
-            return parsed
-        except json.JSONDecodeError as e:
-            logger.error("Secret is not valid JSON", path=secret_path, error=str(e))
-            return None
+            parsed: T = parse(response.payload.data)
         except Exception as e:
             logger.error(
-                "Failed to fetch secret",
+                "Failed to fetch / parse secret",
                 path=secret_path,
                 error=str(e),
                 error_type=type(e).__name__,
             )
             return None
-
-    def _fetch_secret_string(self, secret_path: str) -> str | None:
-        """Fetch a plain UTF-8 string secret. Used for the valheim password."""
-        if not secret_path:
-            return None
-        if secret_path in self._string_cache:
-            return self._string_cache[secret_path]
-        if not self.client:
-            logger.error("Secret Manager client not available - cannot fetch secrets")
-            return None
-
-        logger.info("Fetching string secret from GSM", path=secret_path)
-        try:
-            response = self.client.access_secret_version(request={"name": secret_path})
-            # Annotate explicitly: self.client is typed Any (lazy-loaded
-            # to tolerate missing dep), so the decoded chain inherits Any
-            # without this hint and mypy's no-any-return fires.
-            decoded: str = response.payload.data.decode("UTF-8").strip()
-            self._string_cache[secret_path] = decoded
-            return decoded
-        except Exception as e:
-            logger.error(
-                "Failed to fetch string secret",
-                path=secret_path,
-                error=str(e),
-                error_type=type(e).__name__,
-            )
-            return None
+        self._cache[secret_path] = parsed
+        return parsed
 
     def get_discord_secrets(self, bot_name: str | None = None) -> DiscordBotSecrets | None:
         bot_name = bot_name or self._discord_bot_name
@@ -184,9 +179,10 @@ class SecretManager:
             )
 
         secret_path = self._get_secret_path("discord")
-        data = self._fetch_secret_json(secret_path)
+        data = self._fetch_secret(secret_path, _parse_json)
         if not data:
             return None
+        logger.info("Loaded discord secret", path=secret_path, keys=list(data.keys()))
 
         # The GSM secret historically stored bots two ways. Try nested first.
         try:
@@ -224,7 +220,7 @@ class SecretManager:
             logger.info("Using VALHEIM_PASSWORD from environment")
             return os.environ["VALHEIM_PASSWORD"]
         secret_path = self._get_secret_path("valheim_password")
-        return self._fetch_secret_string(secret_path)
+        return self._fetch_secret(secret_path, _parse_string)
 
     def get_lavalink_password(self) -> str | None:
         """Return the Lavalink REST/WS server password (plain string).
@@ -238,7 +234,7 @@ class SecretManager:
             logger.info("Using LAVALINK_PASSWORD from environment")
             return os.environ["LAVALINK_PASSWORD"]
         secret_path = self._get_secret_path("lavalink_password")
-        return self._fetch_secret_string(secret_path)
+        return self._fetch_secret(secret_path, _parse_string)
 
     def get_all_secrets(self) -> AppSecrets:
         return AppSecrets(
@@ -248,8 +244,7 @@ class SecretManager:
         )
 
     def clear_cache(self) -> None:
-        self._json_cache.clear()
-        self._string_cache.clear()
+        self._cache.clear()
 
 
 _secret_manager: SecretManager | None = None

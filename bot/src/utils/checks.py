@@ -1,4 +1,4 @@
-"""Slash-command checks (`app_commands.check` predicates).
+"""Slash-command checks (`app_commands.check` predicates) and decorators.
 
 Pattern:
     Pure-logic predicate (`is_allowed_channel`, etc.) is exported and
@@ -6,11 +6,17 @@ Pattern:
     (`requires_channel`) handles I/O -- ephemeral redirect message and
     raising CheckFailure -- and is intentionally thin so the testable
     surface stays in the pure functions.
+
+`requires_guild` is a different shape: it wraps the COMMAND BODY (not
+a `check` predicate) to defer + guard against DMs. We can't express
+the guild-or-DM split via `check` because checks fire before defer,
+and we want a uniform "defer then validate then run" cadence.
 """
 
 from __future__ import annotations
 
 import contextlib
+import functools
 from collections.abc import Callable
 from typing import Any
 
@@ -93,3 +99,30 @@ def requires_channel(channel_id_attr: str) -> Callable[[Any], Any]:
         )
 
     return app_commands.check(predicate)
+
+
+def requires_guild(func: Callable[..., Any]) -> Callable[..., Any]:
+    """Decorator: defer the response, then short-circuit if invoked in a DM.
+
+    Folds two pieces of boilerplate that opened nearly every /music *
+    handler:
+      ``await interaction.response.defer(thinking=True)``
+      ``if interaction.guild is None: <ephemeral redirect>; return``
+
+    Apply ABOVE ``@requires_channel`` so the channel-scope predicate
+    (a `check`, which fires before defer) still gets first say.
+
+    NB: doesn't compose with commands that need a custom defer style
+    (ephemeral defer, no `thinking=True`, etc.). Those call defer
+    themselves and don't use this decorator.
+    """
+
+    @functools.wraps(func)
+    async def wrapper(self: Any, interaction: discord.Interaction, *args: Any, **kwargs: Any) -> Any:
+        await interaction.response.defer(thinking=True)
+        if interaction.guild is None:
+            await interaction.followup.send("Use this in a server channel.", ephemeral=True)
+            return None
+        return await func(self, interaction, *args, **kwargs)
+
+    return wrapper

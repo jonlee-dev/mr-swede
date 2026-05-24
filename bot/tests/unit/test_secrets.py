@@ -93,24 +93,27 @@ class TestSecretManager:
             assert manager.get_discord_secrets("nonexistent-bot") is None
 
     def test_fetch_caches_results(self, manager: SecretManager):
+        # The unified _fetch_secret caches by path. Two calls to the
+        # same path should hit GSM exactly once.
         mock_response = MagicMock()
-        mock_response.payload.data.decode.return_value = json.dumps({"key": "value"})
+        mock_response.payload.data = json.dumps({"key": "value"}).encode("utf-8")
         mock_client = MagicMock()
         mock_client.access_secret_version.return_value = mock_response
         manager._client = mock_client
 
-        manager._fetch_secret_json("test/path")
-        manager._fetch_secret_json("test/path")
+        from src.config.secrets import _parse_json
 
-        # Cache hit on second call -- only one network round-trip.
+        manager._fetch_secret("test/path", _parse_json)
+        manager._fetch_secret("test/path", _parse_json)
+
         assert mock_client.access_secret_version.call_count == 1
 
     def test_clear_cache(self, manager: SecretManager):
-        manager._json_cache["x"] = "y"
-        manager._string_cache["z"] = "w"
+        # Single unified _cache replaces the old per-type caches.
+        manager._cache["x"] = "y"
+        manager._cache["z"] = "w"
         manager.clear_cache()
-        assert manager._json_cache == {}
-        assert manager._string_cache == {}
+        assert manager._cache == {}
 
     def test_valheim_password_path_uses_project_id(self, manager: SecretManager):
         path = manager._get_secret_path("valheim_password")

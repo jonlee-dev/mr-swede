@@ -76,34 +76,42 @@ async def describe_instance(project: str, zone: str, instance: str) -> InstanceS
     return await asyncio.to_thread(_get)
 
 
-async def start_instance(project: str, zone: str, instance: str) -> bool:
-    """Start the VM. Idempotent. Returns True if a start was issued, False if already RUNNING.
+def _transition_sync(
+    project: str,
+    zone: str,
+    instance: str,
+    op_name: str,
+    skip_if_status: str,
+) -> bool:
+    """Issue `op_name` (start/stop) on the VM. Returns True if the op was
+    actually sent, False if the VM was already in the target state.
 
-    Returns once the operation is enqueued. Does not block until RUNNING.
+    Sync helper; the public functions wrap this in `asyncio.to_thread`.
     """
+    vm = _client().get(project=project, zone=zone, instance=instance)
+    if vm.status == skip_if_status:
+        logger.info(f"{op_name}_instance noop: already {skip_if_status}", instance=instance)
+        return False
+    op_func = getattr(_client(), op_name)
+    op_func(project=project, zone=zone, instance=instance)
+    logger.info(f"{op_name}_instance issued", instance=instance, prior_status=vm.status)
+    return True
 
-    def _start() -> bool:
-        vm = _client().get(project=project, zone=zone, instance=instance)
-        if vm.status == "RUNNING":
-            logger.info("start_instance noop: already running", instance=instance)
-            return False
-        _client().start(project=project, zone=zone, instance=instance)
-        logger.info("start_instance issued", instance=instance, prior_status=vm.status)
-        return True
 
-    return await asyncio.to_thread(_start)
+async def start_instance(project: str, zone: str, instance: str) -> bool:
+    """Start the VM. Idempotent. Returns True if a start was issued, False
+    if already RUNNING. Returns once the op is enqueued; does not block
+    until RUNNING.
+    """
+    return await asyncio.to_thread(
+        _transition_sync, project, zone, instance, "start", "RUNNING"
+    )
 
 
 async def stop_instance(project: str, zone: str, instance: str) -> bool:
-    """Stop the VM. Idempotent. Returns True if a stop was issued, False if already TERMINATED."""
-
-    def _stop() -> bool:
-        vm = _client().get(project=project, zone=zone, instance=instance)
-        if vm.status == "TERMINATED":
-            logger.info("stop_instance noop: already terminated", instance=instance)
-            return False
-        _client().stop(project=project, zone=zone, instance=instance)
-        logger.info("stop_instance issued", instance=instance, prior_status=vm.status)
-        return True
-
-    return await asyncio.to_thread(_stop)
+    """Stop the VM. Idempotent. Returns True if a stop was issued, False
+    if already TERMINATED.
+    """
+    return await asyncio.to_thread(
+        _transition_sync, project, zone, instance, "stop", "TERMINATED"
+    )
