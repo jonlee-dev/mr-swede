@@ -25,8 +25,10 @@ COG_MODULES = (
 class MrSwede(commands.Bot):
     """Mr. Swede Discord bot.
 
-    Slash-command-only. We don't use legacy `!`/`$` prefix commands, so
-    `message_content` and `voice_states` intents stay off.
+    Slash-command-only -- we don't consume the privileged `message_content`
+    intent. Voice connections for /music work via discord.py's default
+    intents (the `voice_states` *privileged* intent is unrelated to the
+    voice CLIENT and we don't need it).
     """
 
     def __init__(self) -> None:
@@ -38,8 +40,12 @@ class MrSwede(commands.Bot):
         # via the Discord developer portal -- we don't need them.
         intents = discord.Intents.default()
 
+        # `command_prefix` is required by commands.Bot but we never use
+        # it (slash-only). Pass `when_mentioned` so users who try
+        # @-pinging the bot get reasonable behavior rather than a stale
+        # `!command` lookup that'd silently nothing.
         super().__init__(
-            command_prefix="!",  # Required by discord.py but unused; we are slash-only
+            command_prefix=commands.when_mentioned,
             intents=intents,
             help_command=None,
         )
@@ -47,18 +53,10 @@ class MrSwede(commands.Bot):
         self.settings = settings
         self.secrets = secrets
 
-        # NOTE 2026-05-09: previously this class tracked
-        # `last_socket_event_time` updated via `on_socket_event_type`,
-        # which only fires for DISPATCH ops -- not heartbeats. A quiet
-        # guild stretch (no message/presence activity) would make the
-        # /livez probe go stale within 90s and Cloud Run would
-        # kill-loop the bot every ~5 min during low-traffic periods.
-        # The freshness signal moved into src/http.py's snapshot
-        # function, which reads discord.py's internal
-        # `bot.ws._keep_alive._last_recv` -- that timestamp is bumped
-        # via `KeepAliveHandler.tick()` on every received WS message
-        # of any kind (including heartbeats sent every ~41s by Discord),
-        # so it doesn't false-positive on quiet bots.
+        # The /livez freshness signal lives in src/http.py and reads
+        # discord.py's `bot.ws._keep_alive._last_recv` directly. See
+        # PRD decisions log 2026-05-09 for the on_socket_event_type
+        # regression that drove that choice.
 
     async def on_ready(self) -> None:
         if self.user:

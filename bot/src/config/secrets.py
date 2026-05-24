@@ -229,9 +229,10 @@ class SecretManager:
     def get_lavalink_password(self) -> str | None:
         """Return the Lavalink REST/WS server password (plain string).
 
-        Same pattern as get_valheim_password: env var beats GSM. The
-        bot uses this as the bearer header on every Lavalink REST/WS
-        call.
+        In production the bot-vm's `bot-fetch-secrets.sh` writes
+        `LAVALINK_PASSWORD` into `/etc/bot/secrets.env` at boot, so
+        the env-var branch is what actually fires. The GSM fallback
+        below stays for local-dev parity.
         """
         if os.environ.get("LAVALINK_PASSWORD"):
             logger.info("Using LAVALINK_PASSWORD from environment")

@@ -41,13 +41,10 @@ from discord.ext import commands
 from src.config.logging import get_logger
 from src.config.secrets import get_secrets
 from src.config.settings import get_settings
-from src.services import compute, music
+from src.services import music
 from src.utils.checks import requires_channel
 
 logger = get_logger(__name__)
-
-
-VM_START_TIMEOUT_SECONDS = 90
 
 
 # ---------------------------------------------------------------------------
@@ -556,43 +553,21 @@ class MusicCog(commands.GroupCog, name="music"):
     # Slash commands (unchanged below this line)
     # ------------------------------------------------------------------
 
-    async def _ensure_lavalink_running(self, interaction: discord.Interaction) -> str | None:
-        """Make sure the Lavalink VM is RUNNING and reachable. Returns the
-        Lavalink host on success, None on timeout (and replies to the
-        user via followup with a wait-and-retry message).
+    async def _ensure_node_connected(self) -> bool:
+        """Open the Wavelink WebSocket to localhost Lavalink if not already
+        open. Returns True on success, False on any failure (cog surfaces
+        a generic error to the user).
+
+        Pre-bot-vm-migration this used to do a GCE start dance for a
+        standalone Lavalink VM. Lavalink now co-tenants the bot's VM at
+        localhost:2333, so the host is fixed and the only work is the
+        Wavelink handshake.
         """
-        s = self._settings
-        # If a host override is set (local dev with localhost Lavalink),
-        # skip the GCE start dance.
-        if s.lavalink_host:
-            return s.lavalink_host
-
-        state = await compute.describe_instance(
-            s.gcp_project_id, s.lavalink_zone, s.lavalink_instance_name
-        )
-        if state.status != "RUNNING":
-            await interaction.followup.send(
-                "Starting the music server, give it ~90 seconds and try again."
-            )
-            await compute.start_instance(
-                s.gcp_project_id, s.lavalink_zone, s.lavalink_instance_name
-            )
-            return None
-
-        if not state.public_ip:
-            await interaction.followup.send(
-                "Music server is RUNNING but doesn't have a public IP yet. Try again in a moment."
-            )
-            return None
-
-        return state.public_ip
-
-    async def _ensure_node_connected(self, host: str) -> bool:
-        """Open the Wavelink WebSocket if not already open."""
         password = get_secrets(self._settings.discord_bot_name).lavalink_password
         if not password:
             logger.error("No Lavalink password available; cannot connect to node")
             return False
+        host = self._settings.lavalink_host or "localhost"
         try:
             await music.connect_node(self.bot, host, self._settings.lavalink_port, password)
             return True
@@ -615,10 +590,7 @@ class MusicCog(commands.GroupCog, name="music"):
             )
             return
 
-        host = await self._ensure_lavalink_running(interaction)
-        if host is None:
-            return  # _ensure_lavalink_running already sent a reply
-        if not await self._ensure_node_connected(host):
+        if not await self._ensure_node_connected():
             await interaction.followup.send(
                 "Couldn't connect to the music server. Check `/health` and the bot logs.",
                 ephemeral=True,
@@ -787,8 +759,3 @@ class MusicCog(commands.GroupCog, name="music"):
 
 async def setup(bot: commands.Bot) -> None:
     await bot.add_cog(MusicCog(bot))
-
-
-# Suppress "imported but unused" for the timeout constant -- the cog
-# body could end up using it for asyncio.wait_for in a future PR.
-_ = VM_START_TIMEOUT_SECONDS

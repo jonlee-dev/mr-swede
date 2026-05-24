@@ -1,19 +1,19 @@
 """Music service: thin wrapper over wavelink for Lavalink-backed audio.
 
-Owns the Lavalink node lifecycle (connect on bot ready, reconnect on
-WebSocket close) and exposes a small set of operations the cog uses.
-The cog never imports `wavelink` directly -- everything routes through
-this module so:
+Owns the Lavalink node lifecycle and exposes the operations the cog
+uses. The cog never imports `wavelink` directly -- everything routes
+through this module so:
 
   - The wavelink dependency stays pinned in one place
   - Tests of the cog can mock this module without library knowledge
   - Future swap to a different Lavalink client (Pomice, Mafic) is
     contained to this file
 
-Per the PRD's TDD answer: this module is NOT unit-tested. Wavelink's
-wire protocol against a real Lavalink is what we actually care about,
-and we exercise it via the live integration probe we already validated
-in Phase 1.
+Most of the surface (play/queue/pause/resume/skip/volume/shuffle/loop)
+is thin glue over wavelink and is exercised via live integration
+against a real Lavalink rather than unit-tested. The voice-recovery
+helpers (`should_recover`, `VoiceHealthSnapshot`, ...) ARE pure and
+unit-tested in tests/unit/test_voice_health.py.
 """
 
 from __future__ import annotations
@@ -103,167 +103,58 @@ def _to_track_info(track: wavelink.Playable, requester_id: int | None = None) ->
 
 _NODE_IDENTIFIER = "mr-swede-main"
 
-# How long connect_node waits for the Wavelink Node to reach CONNECTED
-# state. This was 30s, but on a 2026-05-07 cold-start incident every
-# /music play attempt timed out at 30s while Lavalink was still
-# finishing its boot (BepInExPack/lavasrc plugin downloads from
-# Thunderstore on first run + JVM startup). The cog's user-facing
-# "wait ~90 seconds and try again" message is the actual cold-start
-# expectation, so the connect timeout should match it. 90s gives the
-# JVM-on-GCE plenty of headroom; longer would just delay error
-# reporting on legitimately broken servers.
+# Wavelink's WS handshake against a healthy localhost Lavalink finishes
+# in well under a second, but Lavalink itself can take 60-90s to boot
+# on a fresh VM (plugin downloads + JVM startup). Keep 90s so the cog
+# surfaces a useful "Lavalink isn't up yet" error instead of hanging
+# forever, AND tolerates the rare case where bot.service races
+# lavalink.service post-reboot.
 _CONNECT_TIMEOUT_SECONDS = 90.0
 
 _CONNECT_POLL_INTERVAL_SECONDS = 0.5
 _HEALTH_CHECK_TIMEOUT_SECONDS = 3.0
 
 
-async def _node_is_live(uri: str, password: str) -> bool:
-    """Hit Lavalink's `/v4/info` to verify the node is actually reachable.
-
-    Wavelink's `NodeStatus.CONNECTED` only reflects the WebSocket
-    handshake state; it doesn't catch the case where the underlying
-    Lavalink VM was stopped + started behind us (idle-watcher cycle,
-    new public IP, fresh session_id) but our cached Node still claims
-    to be CONNECTED. The bot would then pass this stale node to
-    `Playable.search()` and get a 404 "Session not found".
-
-    A 200 OK from `/v4/info` confirms HTTP reachability AND password
-    validity; that's a strong-enough signal that the node is usable.
-    Any error response (404/timeout/connect-refused) means we should
-    treat the cached node as stale and reconnect from scratch.
-    """
-    info_url = f"{uri.rstrip('/')}/v4/info"
-    headers = {"Authorization": password}
-    try:
-        async with httpx.AsyncClient(timeout=_HEALTH_CHECK_TIMEOUT_SECONDS) as client_http:
-            resp = await client_http.get(info_url, headers=headers)
-    except (httpx.HTTPError, OSError) as exc:
-        logger.warning("Lavalink /v4/info probe failed", uri=info_url, error=repr(exc))
-        return False
-    if resp.status_code != 200:
-        logger.warning(
-            "Lavalink /v4/info returned non-200, treating node as stale",
-            uri=info_url,
-            status=resp.status_code,
-        )
-        return False
-    return True
-
-
-async def _drop_stale_node(node: wavelink.Node) -> None:
-    """Close AND fully evict a node from the Pool so the next
-    connect_node call gets a clean slate.
-
-    THE GOTCHA (2026-05-10): the previous version of this function
-    called `await node.close()` followed by
-    `wavelink.Pool.nodes.pop(_NODE_IDENTIFIER, None)`. That second
-    call was a SILENT NO-OP. `Pool.nodes` is a `classproperty`
-    that returns `cls.__nodes.copy()` -- a throwaway dict. Popping
-    from the copy doesn't touch Wavelink's real internal storage
-    (`_Pool__nodes`, name-mangled). The old node's identifier
-    therefore stayed registered in the Pool, and the next
-    `Pool.connect(nodes=[new_node_with_same_identifier])` either
-    (a) silently rejected the new node with the "Unable to connect
-    ... as you already have a node with identifier" log, or
-    (b) accepted it but ended up in a confused state where the WS
-    handshake never completed.
-
-    Either way, the user's symptom was 'connect timed out at 90s'
-    after a Lavalink VM had been recycled (new IP). Our eviction
-    triggered correctly but didn't actually free the slot.
-
-    Correct API: `await node.close(eject=True)`. The `eject` flag
-    (added in Wavelink 3.2.1) makes `close()` itself remove the
-    entry from `_Pool__nodes` -- the real dict, not a copy. After
-    this returns, `_NODE_IDENTIFIER` is genuinely free for
-    reassignment.
-    """
-    try:
-        await node.close(eject=True)
-    except Exception as exc:  # noqa: BLE001 -- best-effort cleanup; we don't care why close failed
-        logger.warning("node.close(eject=True) raised during stale-node eviction", error=repr(exc))
-        # Belt-and-suspenders: if close() raised before reaching its
-        # own eject branch, fall back to manually popping the real
-        # private dict via name-mangling. This is private API and may
-        # break across Wavelink versions, but pinning Pool.connect
-        # behind a confirmed-stale node is worse than a small
-        # version-coupling risk.
-        getattr(wavelink.Pool, "_Pool__nodes", {}).pop(_NODE_IDENTIFIER, None)
-
-
 async def connect_node(client: discord.Client, host: str, port: int, password: str) -> None:
     """Open the WebSocket to Lavalink and wait until the node is CONNECTED.
 
-    Behaviors of wavelink 3.x covered here:
+    Idempotent: if the cached node entry is already CONNECTED, returns
+    immediately. Otherwise evicts whatever's there and reconnects.
 
-      1. `Pool.connect()` requires a `client=` kwarg. Without it, the
-         pool can't subscribe to discord.py's voice gateway events
-         and the node never finishes its handshake.
-
-      2. `Pool.connect()` is fire-and-forget -- it queues the
-         WebSocket connection and returns immediately, BEFORE the
-         node reaches CONNECTED state. Calling `Playable.search()`
-         right after raises "No nodes are currently assigned to the
-         wavelink.Pool in a CONNECTED state". We poll node.status
-         here until ready (or timeout).
-
-      3. Idempotent fast-path: if a node with the same identifier is
-         in the pool, CONNECTED, pointing at the same URI, AND a
-         /v4/info probe succeeds, we return immediately without
-         re-creating it.
-
-      4. Stale-node eviction: any other state of the existing-node
-         entry forces an evict-and-reconnect:
-
-           - CONNECTED but URI changed (idle-watcher cycled the VM,
-             new public IP) -> _v4/info_ probe catches this
-           - CONNECTED but /v4/info fails (Lavalink restarted; cached
-             session_id is invalid) -> probe also catches this
-           - DISCONNECTED (Wavelink lost the WS when Lavalink VM was
-             stopped by the watcher; the entry is still in
-             Pool.nodes but useless) -> THIS BRANCH FIXES THE
-             2026-05-04 bug where /music play after a watcher stop
-             logged "Unable to connect ... as you already have a
-             node with identifier" and silently failed
-           - CONNECTING / any other transitional -> evict to be safe;
-             reconnect is cheap, leaving a half-dead entry isn't
-
-         Without these, an idle-watcher-induced VM cycle would
-         require a manual bot bounce.
+    Wavelink 3.x gotchas this hides:
+      - `Pool.connect()` returns BEFORE the node finishes its
+        handshake. We poll `node.status` until CONNECTED.
+      - The pool refuses a `connect()` if the identifier is already
+        in use, even with a stale entry. We `node.close(eject=True)`
+        which removes the entry from the real `_Pool__nodes` dict
+        (the 2026-05-10 lesson -- see PRD decision log).
     """
     uri = f"http://{host}:{port}"
 
     existing = wavelink.Pool.nodes.get(_NODE_IDENTIFIER)
     if existing is not None:
-        is_connected = existing.status is wavelink.NodeStatus.CONNECTED
-        existing_uri = getattr(existing, "uri", None)
-        if is_connected and existing_uri == uri and await _node_is_live(uri, password):
-            # Fast-path: same URI, healthy probe, definitely usable.
-            logger.debug("Lavalink node already connected and healthy", uri=uri)
+        if existing.status is wavelink.NodeStatus.CONNECTED:
+            logger.debug("Lavalink node already connected", uri=uri)
             return
-        # Any other state (DISCONNECTED, CONNECTED-but-stale, CONNECTING,
-        # ...) means the cached entry can't be reused. Evict so the
-        # Pool.connect below doesn't trip on the duplicate identifier.
         logger.info(
             "Cached Lavalink node not usable; evicting and reconnecting",
             cached_status=str(existing.status),
-            cached_uri=existing_uri,
             new_uri=uri,
         )
-        await _drop_stale_node(existing)
+        try:
+            await existing.close(eject=True)
+        except Exception as exc:  # noqa: BLE001 -- best-effort cleanup
+            logger.warning("node.close(eject=True) raised during eviction", error=repr(exc))
 
     logger.info("Connecting to Lavalink node", uri=uri)
     node = wavelink.Node(uri=uri, password=password, identifier=_NODE_IDENTIFIER)
     await wavelink.Pool.connect(client=client, nodes=[node])
 
-    # Poll until CONNECTED. Bail if it doesn't happen within
-    # CONNECT_TIMEOUT_SECONDS so the cog can surface a useful error
+    # Poll until CONNECTED. Bail with TimeoutError if it doesn't
+    # happen within the deadline so the cog surfaces a useful error
     # instead of hanging forever.
     deadline = asyncio.get_event_loop().time() + _CONNECT_TIMEOUT_SECONDS
     while asyncio.get_event_loop().time() < deadline:
-        # Re-fetch from the pool because Pool.connect may swap node
-        # objects internally during reconnection paths.
         current = wavelink.Pool.nodes.get(_NODE_IDENTIFIER, node)
         if current.status is wavelink.NodeStatus.CONNECTED:
             logger.info("Lavalink node connected", uri=uri)
@@ -881,11 +772,11 @@ NodeReadyEventPayload = wavelink.NodeReadyEventPayload
 
 __all__ = [
     "PLAYLIST_TRACK_CAP",
+    "NodeReadyEventPayload",
     "PlayResult",
     "RecoveryAction",
-    "TrackInfo",
     "TrackEndEventPayload",
-    "NodeReadyEventPayload",
+    "TrackInfo",
     "VoiceHealthSnapshot",
     "connect_node",
     "fetch_aggregate_frame_deficit",
@@ -904,8 +795,3 @@ __all__ = [
     "skip",
     "stop_and_disconnect",
 ]
-
-
-# `asyncio` is imported to keep the type stub clean; if you remove all
-# async references this guards against a "imported but unused" hit.
-_ = asyncio

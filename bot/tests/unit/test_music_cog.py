@@ -25,10 +25,8 @@ from src.services.music import PLAYLIST_TRACK_CAP, PlayResult, TrackInfo
 @pytest.fixture
 def settings(monkeypatch: pytest.MonkeyPatch) -> Settings:
     monkeypatch.setenv("GCP_PROJECT_ID", "test-proj")
-    monkeypatch.setenv("LAVALINK_INSTANCE_NAME", "lavalink-server")
-    monkeypatch.setenv("LAVALINK_ZONE", "us-central1-a")
     monkeypatch.setenv("LAVALINK_PORT", "2333")
-    monkeypatch.setenv("LAVALINK_HOST", "1.2.3.4")  # skip GCE start dance
+    monkeypatch.setenv("LAVALINK_HOST", "127.0.0.1")
     monkeypatch.setenv("MUSIC_COMMAND_CHANNEL_ID", "555")
     return Settings()
 
@@ -172,7 +170,6 @@ class TestPlayCommand:
     async def test_single_track_renders_track_embed(self, cog: MusicCog):
         interaction = _interaction()
         with (
-            patch.object(cog, "_ensure_lavalink_running", AsyncMock(return_value="1.2.3.4")),
             patch.object(cog, "_ensure_node_connected", AsyncMock(return_value=True)),
             patch(
                 "src.cogs.music.music.play",
@@ -190,7 +187,6 @@ class TestPlayCommand:
     async def test_queued_track_uses_queue_position_in_header(self, cog: MusicCog):
         interaction = _interaction()
         with (
-            patch.object(cog, "_ensure_lavalink_running", AsyncMock(return_value="1.2.3.4")),
             patch.object(cog, "_ensure_node_connected", AsyncMock(return_value=True)),
             patch(
                 "src.cogs.music.music.play",
@@ -205,7 +201,6 @@ class TestPlayCommand:
     async def test_playlist_renders_playlist_embed(self, cog: MusicCog):
         interaction = _interaction()
         with (
-            patch.object(cog, "_ensure_lavalink_running", AsyncMock(return_value="1.2.3.4")),
             patch.object(cog, "_ensure_node_connected", AsyncMock(return_value=True)),
             patch(
                 "src.cogs.music.music.play",
@@ -221,7 +216,6 @@ class TestPlayCommand:
     async def test_truncated_playlist_surfaces_warning(self, cog: MusicCog):
         interaction = _interaction()
         with (
-            patch.object(cog, "_ensure_lavalink_running", AsyncMock(return_value="1.2.3.4")),
             patch.object(cog, "_ensure_node_connected", AsyncMock(return_value=True)),
             patch(
                 "src.cogs.music.music.play",
@@ -236,7 +230,6 @@ class TestPlayCommand:
     async def test_unresolved_count_surfaces(self, cog: MusicCog):
         interaction = _interaction()
         with (
-            patch.object(cog, "_ensure_lavalink_running", AsyncMock(return_value="1.2.3.4")),
             patch.object(cog, "_ensure_node_connected", AsyncMock(return_value=True)),
             patch(
                 "src.cogs.music.music.play",
@@ -251,7 +244,6 @@ class TestPlayCommand:
     async def test_no_results_sends_ephemeral_message(self, cog: MusicCog):
         interaction = _interaction()
         with (
-            patch.object(cog, "_ensure_lavalink_running", AsyncMock(return_value="1.2.3.4")),
             patch.object(cog, "_ensure_node_connected", AsyncMock(return_value=True)),
             patch(
                 "src.cogs.music.music.play",
@@ -269,7 +261,6 @@ class TestPlayCommand:
     async def test_play_failure_is_surfaced_ephemerally(self, cog: MusicCog):
         interaction = _interaction()
         with (
-            patch.object(cog, "_ensure_lavalink_running", AsyncMock(return_value="1.2.3.4")),
             patch.object(cog, "_ensure_node_connected", AsyncMock(return_value=True)),
             patch(
                 "src.cogs.music.music.play",

@@ -27,12 +27,11 @@ bot/
 │   │   ├── server_query.py # HTTP fetch of /status.json from the Valheim VM's daemon
 │   │   └── music.py       # Wavelink wrapper (node connect, search, play, idempotent)
 │   └── utils/
-│       ├── checks.py      # @requires_channel decorator (gates /music to #bot-spam)
-│       └── helpers.py
+│       └── checks.py      # @requires_channel, @requires_guild decorators
 ├── tests/
 │   ├── unit/              # Fast, hermetic tests
 │   └── conftest.py
-├── Dockerfile             # Multi-stage build for Cloud Run
+├── Dockerfile             # Multi-stage build (kept for Cloud Run rollback path)
 └── pyproject.toml
 ```
 

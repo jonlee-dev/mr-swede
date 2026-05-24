@@ -48,13 +48,12 @@ class Settings(BaseSettings):
         description="TCP port on the Valheim VM where the log-scraping status server listens. Must match server/scripts/status-server.py + the firewall rule in gcp-valheim-vm.",
     )
 
-    # Lavalink VM target -- consumed by /music * commands.
-    lavalink_instance_name: str = Field(default="lavalink-server", alias="LAVALINK_INSTANCE_NAME")
-    lavalink_zone: str = Field(default="us-central1-a", alias="LAVALINK_ZONE")
+    # Lavalink target. Always localhost on bot-vm (co-tenanted); override
+    # for local dev when running Lavalink at a different address.
     lavalink_host: str = Field(
-        default="",
+        default="localhost",
         alias="LAVALINK_HOST",
-        description="Hostname/IP of the Lavalink server. Empty = resolve at runtime via compute.describe_instance() on the lavalink VM. Override for local dev when you have a Lavalink running locally.",
+        description="Hostname/IP of the Lavalink server. Defaults to localhost (matches bot-vm topology where Lavalink runs as a sibling systemd service).",
     )
     lavalink_port: int = Field(default=2333, alias="LAVALINK_PORT")
 
