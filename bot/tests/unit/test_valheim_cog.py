@@ -9,7 +9,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import discord
 import pytest
 
-from src.cogs.valheim import ValheimCog, build_status_embed
+from src.cogs.embeds import valheim_status_embed as build_status_embed
+from src.cogs.valheim import ValheimCog
 from src.config.settings import Settings
 from src.services.compute import InstanceState
 from src.services.server_query import LiveStatus

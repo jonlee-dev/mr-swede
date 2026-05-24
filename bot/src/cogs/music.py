@@ -31,32 +31,27 @@ from __future__ import annotations
 
 import asyncio
 import time
-from dataclasses import dataclass
 
 import discord
 import wavelink
 from discord import app_commands
 from discord.ext import commands
 
+from src.cogs.embeds import music_playlist_embed, music_track_embed
 from src.config.logging import get_logger
 from src.config.secrets import get_secrets
 from src.config.settings import get_settings
-from src.services import music
+from src.services import music, voice_recovery
 from src.utils.checks import requires_channel, requires_guild
 
 logger = get_logger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# Voice-gateway-recovery configuration
-# ---------------------------------------------------------------------------
-
 # How often the heartbeat task polls Lavalink's player-state endpoint
 # per active player. With Lavalink's playerUpdateInterval bumped to 1s
 # in server/lavalink/application.yml, 2s sampling gives us at least
 # one playerUpdate per sample, so successive snapshots compare apples
-# to apples. Detection window with _WEDGE_CONFIRMATION_SAMPLES=2 is
-# ~4s of wedge before we fire.
+# to apples. Detection window is ~4s of wedge before we fire.
 _HEARTBEAT_INTERVAL_SECONDS = 2.0
 
 # Discord voice WS close codes that mean "the voice connection died on
@@ -69,89 +64,6 @@ _HEARTBEAT_INTERVAL_SECONDS = 2.0
 _RECOVERABLE_VOICE_CLOSE_CODES = frozenset({4006, 4014, 4015})
 
 
-@dataclass
-class _GuildRecoveryState:
-    """Per-guild bookkeeping for the heartbeat. NOT frozen; the
-    heartbeat mutates `last_snapshot`, `consecutive_wedge_samples`,
-    `last_recovery_at`, and `recovery_attempts_for_track` on every
-    tick.
-
-    The whole struct is keyed by guild.id in MusicCog._recovery_state.
-    Cleared whenever the player disconnects (cog stops tracking it).
-    """
-
-    last_snapshot: music.VoiceHealthSnapshot | None = None
-    consecutive_wedge_samples: int = 0
-    last_recovery_at: float | None = None
-    # Reset when track_identifier changes. The recovery budget is
-    # PER-TRACK: a wedged track gets one retry, then skipped.
-    recovery_attempts_for_track: int = 0
-    # Identifier of the track the attempts counter is bound to. When
-    # we see a new identifier we zero `recovery_attempts_for_track`
-    # before evaluating.
-    attempts_bound_to_track: str | None = None
-
-
-def _track_embed(track: music.TrackInfo, header: str, color: int = 0x1ABC9C) -> discord.Embed:
-    embed = discord.Embed(title=header, description=f"**{track.title}**", color=color)
-    embed.add_field(name="Artist", value=track.author, inline=True)
-    embed.add_field(name="Length", value=music.format_duration(track.duration_ms), inline=True)
-    if track.requester_id is not None:
-        embed.add_field(name="Requested by", value=f"<@{track.requester_id}>", inline=True)
-    if track.uri:
-        embed.url = track.uri
-    return embed
-
-
-def _playlist_embed(result: music.PlayResult, color: int = 0x1ABC9C) -> discord.Embed:
-    """Summary embed for a playlist/album URL resolution.
-
-    Surfaces:
-      - total tracks queued (= 1 first_track + extra_tracks_queued)
-      - playlist title (or "playlist" fallback when lavasrc surfaces no name)
-      - truncation warning when the source playlist exceeded
-        PLAYLIST_TRACK_CAP
-      - unresolved count when some tracks couldn't be matched
-      - first-up track inline so the user sees what's playing now
-    """
-    assert result.first_track is not None  # caller checks
-    total_queued = 1 + result.extra_tracks_queued
-    title = result.playlist_title or "playlist"
-    embed = discord.Embed(
-        title=f"Queued {total_queued} tracks",
-        description=f'From **"{title}"**',
-        color=color,
-    )
-
-    embed.add_field(
-        name="First up",
-        value=f"**{result.first_track.title}** ({music.format_duration(result.first_track.duration_ms)})",
-        inline=False,
-    )
-
-    if result.truncated_from is not None:
-        embed.add_field(
-            name="Truncated",
-            value=(
-                f"Playlist had {result.truncated_from} tracks; "
-                f"queued the first {total_queued} (cap = {music.PLAYLIST_TRACK_CAP})."
-            ),
-            inline=False,
-        )
-
-    if result.unresolved_count > 0:
-        embed.add_field(
-            name="Unresolved",
-            value=f"{result.unresolved_count} track(s) couldn't be resolved and were skipped.",
-            inline=False,
-        )
-
-    if result.first_track.requester_id is not None:
-        embed.set_footer(text=f"Requested by user {result.first_track.requester_id}")
-
-    return embed
-
-
 class MusicCog(commands.GroupCog, name="music"):
     """The /music command group."""
 
@@ -161,7 +73,7 @@ class MusicCog(commands.GroupCog, name="music"):
         # Per-guild heartbeat bookkeeping. Lazily populated when the
         # heartbeat first sees a guild with an active player; entries
         # are cleared when a player disconnects.
-        self._recovery_state: dict[int, _GuildRecoveryState] = {}
+        self._recovery_state: dict[int, voice_recovery.GuildRecoveryState] = {}
         # Set in cog_load, cancelled in cog_unload. The lifecycle is
         # tied to the cog (not the bot) so that test harnesses can
         # construct + tear down the cog without a long-running task
@@ -230,12 +142,16 @@ class MusicCog(commands.GroupCog, name="music"):
             reason=payload.reason,
         )
 
-        # Treat the event as a single confirmed wedge sample. Reuse
-        # the same dispatcher that the heartbeat uses so the retry
-        # budget + announcements stay consistent across signal sources.
+        # Build a synthetic snapshot + run it through the SAME decision
+        # function the heartbeat uses. Keeps budget/throttle logic in
+        # one place; the cog dispatcher only does I/O.
+        state = self._recovery_state.setdefault(guild.id, voice_recovery.GuildRecoveryState())
+        track_identifier = getattr(player.current, "identifier", None) if player.current else None
+        action = voice_recovery.event_driven_action(state, track_identifier, time.monotonic())
         await self._dispatch_recovery(
             guild,
             player,
+            action,
             trigger=f"wavelink_close_{payload.code}",
         )
 
@@ -304,15 +220,16 @@ class MusicCog(commands.GroupCog, name="music"):
 
     async def _heartbeat_tick(self) -> None:
         """One pass: for every guild with a connected wavelink.Player,
-        fetch player state + aggregate frame deficit, build a snapshot,
+        sample player state + aggregate frame deficit, build a snapshot,
         feed `should_recover`, dispatch on the result.
+
+        We only have one Lavalink node so the aggregate frame deficit
+        is fetched once per tick; per-player state is fetched inside
+        the loop because it's keyed by guild_id.
         """
-        # We only have one Lavalink node (`_NODE_IDENTIFIER`), so fetch
-        # the aggregate frame deficit once per tick. Per-player state
-        # is fetched inside the loop because it includes a guild_id.
         node = wavelink.Pool.nodes.get("mr-swede-main")
         if node is None or node.status is not wavelink.NodeStatus.CONNECTED:
-            return  # No node, no signal.
+            return
 
         node_uri = getattr(node, "uri", None)
         node_password = getattr(node, "password", None)
@@ -320,9 +237,9 @@ class MusicCog(commands.GroupCog, name="music"):
         if not node_uri or not node_password or not session_id:
             return
 
-        deficit = await music.fetch_aggregate_frame_deficit(node_uri, node_password)
+        deficit = await voice_recovery.fetch_aggregate_frame_deficit(node_uri, node_password)
         if deficit is None:
-            return  # Don't penalize the wedge counter on a transient HTTP blip.
+            return  # Transient HTTP blip -- don't penalize the wedge counter.
 
         now = time.monotonic()
 
@@ -333,87 +250,90 @@ class MusicCog(commands.GroupCog, name="music"):
                 self._recovery_state.pop(guild.id, None)
                 continue
 
-            probe = await music.fetch_player_state(
+            probe = await voice_recovery.fetch_player_state(
                 node_uri, node_password, session_id, guild.id
             )
             if probe is None:
-                # Transient -- don't increment wedge counter.
                 continue
 
-            current_track = player.current
-            track_identifier = getattr(current_track, "identifier", None)
+            await self._observe_and_maybe_recover(guild, player, probe, deficit, now)
 
-            snapshot = music.VoiceHealthSnapshot(
-                track_identifier=track_identifier,
-                position_ms=probe.position_ms,
-                voice_connected=probe.connected,
-                frame_deficit=deficit,
-                is_playing=bool(player.playing),
-                is_paused=bool(player.paused),
-                sampled_at=now,
-            )
+    async def _observe_and_maybe_recover(
+        self,
+        guild: discord.Guild,
+        player: wavelink.Player,
+        probe: voice_recovery.PlayerStateProbe,
+        deficit: int,
+        now: float,
+    ) -> None:
+        """Per-guild half of `_heartbeat_tick`: build a snapshot, update
+        the streak counter, run `should_recover`, dispatch if needed.
 
-            state = self._recovery_state.setdefault(guild.id, _GuildRecoveryState())
+        Pulled out of `_heartbeat_tick` so the per-tick work + per-guild
+        work each fit in one screen.
+        """
+        current_track = player.current
+        track_identifier = getattr(current_track, "identifier", None)
 
-            # If the track changed (or there's no track), reset the
-            # per-track attempts counter. We do this BEFORE invoking
-            # the decision so should_recover sees a clean budget for
-            # the new track.
-            if state.attempts_bound_to_track != track_identifier:
-                state.attempts_bound_to_track = track_identifier
-                state.recovery_attempts_for_track = 0
-                state.consecutive_wedge_samples = 0
+        snapshot = voice_recovery.VoiceHealthSnapshot(
+            track_identifier=track_identifier,
+            position_ms=probe.position_ms,
+            voice_connected=probe.connected,
+            frame_deficit=deficit,
+            is_playing=bool(player.playing),
+            is_paused=bool(player.paused),
+            sampled_at=now,
+        )
 
-            # Increment the consecutive-wedge counter based on this
-            # snapshot's signal, BEFORE calling should_recover. The
-            # function checks `consecutive_wedge_samples >= 2`.
-            voice_dead = not snapshot.voice_connected
-            deficit_grew = (
+        state = self._recovery_state.setdefault(guild.id, voice_recovery.GuildRecoveryState())
+
+        # Track changed since last sample -> reset per-track wedge state
+        # BEFORE evaluating so should_recover sees a clean budget.
+        if state.attempts_bound_to_track != track_identifier:
+            state.attempts_bound_to_track = track_identifier
+            state.recovery_attempts_for_track = 0
+            state.consecutive_wedge_samples = 0
+
+        # Increment the consecutive-wedge streak based on THIS snapshot.
+        # Mirrors `should_recover`'s internal wedge-signal logic: voice
+        # disconnected OR frame deficit growing too fast. Reset to 0 on
+        # any healthy sample so the counter strictly counts consecutive.
+        sample_wedged = snapshot.is_playing and not snapshot.is_paused and (
+            not snapshot.voice_connected
+            or (
                 state.last_snapshot is not None
-                and snapshot.is_playing
-                and not snapshot.is_paused
-                and snapshot.track_identifier is not None
                 and state.last_snapshot.track_identifier == snapshot.track_identifier
-                and (snapshot.frame_deficit - state.last_snapshot.frame_deficit) >= 25
+                and (snapshot.frame_deficit - state.last_snapshot.frame_deficit)
+                >= voice_recovery.DEFICIT_GROWTH_THRESHOLD
             )
-            sample_wedged = voice_dead or deficit_grew
-            if sample_wedged and snapshot.is_playing and not snapshot.is_paused:
-                state.consecutive_wedge_samples += 1
-            else:
-                state.consecutive_wedge_samples = 0
+        )
+        if sample_wedged:
+            state.consecutive_wedge_samples += 1
+        else:
+            state.consecutive_wedge_samples = 0
 
-            action = music.should_recover(
-                curr=snapshot,
-                prev=state.last_snapshot,
-                consecutive_wedge_samples=state.consecutive_wedge_samples,
-                last_recovery_at=state.last_recovery_at,
-                recovery_attempts_for_track=state.recovery_attempts_for_track,
-                now=now,
-            )
+        action = voice_recovery.should_recover(
+            curr=snapshot,
+            prev=state.last_snapshot,
+            consecutive_wedge_samples=state.consecutive_wedge_samples,
+            last_recovery_at=state.last_recovery_at,
+            recovery_attempts_for_track=state.recovery_attempts_for_track,
+            now=now,
+        )
+        state.last_snapshot = snapshot
 
-            # Always update last_snapshot AFTER the decision so the
-            # next tick has the right prev. Update before dispatching
-            # the recovery so it sees the latest state.
-            state.last_snapshot = snapshot
+        if action is voice_recovery.RecoveryAction.NONE:
+            return
 
-            if action is music.RecoveryAction.NONE:
-                continue
-
-            logger.warning(
-                "voice heartbeat: wedge detected",
-                guild_id=guild.id,
-                track=getattr(current_track, "title", "<unknown>"),
-                action=action.value,
-                consecutive_wedge_samples=state.consecutive_wedge_samples,
-                attempts_for_track=state.recovery_attempts_for_track,
-            )
-
-            await self._dispatch_recovery(
-                guild,
-                player,
-                trigger="heartbeat",
-                preselected_action=action,
-            )
+        logger.warning(
+            "voice heartbeat: wedge detected",
+            guild_id=guild.id,
+            track=getattr(current_track, "title", "<unknown>"),
+            action=action.value,
+            consecutive_wedge_samples=state.consecutive_wedge_samples,
+            attempts_for_track=state.recovery_attempts_for_track,
+        )
+        await self._dispatch_recovery(guild, player, action, trigger="heartbeat")
 
     # ------------------------------------------------------------------
     # Voice-gateway-recovery: dispatcher
@@ -423,55 +343,33 @@ class MusicCog(commands.GroupCog, name="music"):
         self,
         guild: discord.Guild,
         player: wavelink.Player,
+        action: voice_recovery.RecoveryAction,
         trigger: str,
-        preselected_action: music.RecoveryAction | None = None,
     ) -> None:
         """Translate a RecoveryAction into Discord side effects.
 
-        For the heartbeat caller, `preselected_action` is the result
-        of should_recover. For the event-handler caller (which fires
-        on a CONFIRMED wedge close code), we pick between RECOVER
-        and GIVE_UP_AND_SKIP locally based on the per-track attempts
-        budget so both paths stay consistent.
+        Action selection lives upstream (heartbeat -> `should_recover`,
+        event handler -> `event_driven_action`). This method is just the
+        I/O dance: announce, reconnect or skip, update state.
         """
-        state = self._recovery_state.setdefault(guild.id, _GuildRecoveryState())
-        current_track = player.current
-
-        # Bind attempts counter to the current track if not already.
-        # Defensive: the heartbeat normally does this, but the event
-        # handler can fire before the heartbeat has run once.
-        track_identifier = getattr(current_track, "identifier", None)
-        if state.attempts_bound_to_track != track_identifier:
-            state.attempts_bound_to_track = track_identifier
-            state.recovery_attempts_for_track = 0
-
-        if preselected_action is None:
-            # Event-handler caller: derive action from the budget.
-            if state.recovery_attempts_for_track >= 1:
-                action = music.RecoveryAction.GIVE_UP_AND_SKIP
-            else:
-                action = music.RecoveryAction.RECOVER
-        else:
-            action = preselected_action
-
-        if action is music.RecoveryAction.NONE:
+        if action is voice_recovery.RecoveryAction.NONE:
             return
 
+        state = self._recovery_state.setdefault(guild.id, voice_recovery.GuildRecoveryState())
+        current_track = player.current
         track_title = getattr(current_track, "title", "<unknown>") if current_track else "<unknown>"
 
-        if action is music.RecoveryAction.GIVE_UP_AND_SKIP:
+        if action is voice_recovery.RecoveryAction.GIVE_UP_AND_SKIP:
             await self._announce(
                 guild,
-                (
-                    f"⏭️ Couldn't keep **{track_title}** playing "
-                    "(audio dropped after the retry). Skipping."
-                ),
+                f"⏭️ Couldn't keep **{track_title}** playing "
+                "(audio dropped after the retry). Skipping.",
             )
             try:
                 await player.skip(force=True)
             except Exception as exc:  # noqa: BLE001 -- last-resort branch; log + move on
                 logger.error("give-up: player.skip raised", error=repr(exc))
-            # Reset counter so the NEXT track gets its own budget.
+            # Reset per-track counter so the NEXT track gets its own budget.
             state.recovery_attempts_for_track = 0
             state.attempts_bound_to_track = None
             state.consecutive_wedge_samples = 0
@@ -481,12 +379,10 @@ class MusicCog(commands.GroupCog, name="music"):
         position_ms = player.position if current_track else 0
         await self._announce(
             guild,
-            (
-                f"🔁 Audio dropped on **{track_title}**, reconnecting at "
-                f"{music.format_duration(position_ms)}…"
-            ),
+            f"🔁 Audio dropped on **{track_title}**, reconnecting at "
+            f"{music.format_duration(position_ms)}…",
         )
-        # Bump the counter BEFORE attempting reconnect so a concurrent
+        # Bump the counter BEFORE the reconnect attempt so a concurrent
         # heartbeat tick can't double-fire.
         state.recovery_attempts_for_track += 1
         state.last_recovery_at = time.monotonic()
@@ -501,11 +397,11 @@ class MusicCog(commands.GroupCog, name="music"):
             )
             await self._announce(
                 guild,
-                f"❌ Couldn't reconnect to voice (no channel). Use `/music play` to retry.",
+                "❌ Couldn't reconnect to voice (no channel). Use `/music play` to retry.",
             )
             return
 
-        ok = await music.reconnect_player_at_position(player, voice_channel)
+        ok = await voice_recovery.reconnect_player_at_position(player, voice_channel)
         if not ok:
             await self._announce(
                 guild,
@@ -611,7 +507,7 @@ class MusicCog(commands.GroupCog, name="music"):
         # Branch on result shape: playlist URLs render the summary embed,
         # search/single-track results render the existing per-track embed.
         if result.playlist_title is not None:
-            await interaction.followup.send(embed=_playlist_embed(result))
+            await interaction.followup.send(embed=music_playlist_embed(result))
             return
 
         header = (
@@ -619,7 +515,7 @@ class MusicCog(commands.GroupCog, name="music"):
             if result.first_track_queue_position == 0
             else f"Queued (#{result.first_track_queue_position})"
         )
-        await interaction.followup.send(embed=_track_embed(result.first_track, header))
+        await interaction.followup.send(embed=music_track_embed(result.first_track, header))
 
     @app_commands.command(name="skip", description="Skip the currently playing track")
     @requires_channel("music_command_channel_id")
@@ -691,7 +587,7 @@ class MusicCog(commands.GroupCog, name="music"):
         if current is None:
             await interaction.followup.send("Nothing is playing.")
             return
-        await interaction.followup.send(embed=_track_embed(current, "Now playing"))
+        await interaction.followup.send(embed=music_track_embed(current, "Now playing"))
 
     @app_commands.command(name="volume", description="Set per-server playback volume (0-200)")
     @app_commands.describe(level="Volume percentage. 100 = normal, 200 = loud, 0 = mute.")

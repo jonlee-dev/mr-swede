@@ -17,9 +17,11 @@ the inputs documented in the should_recover docstring.
 
 from __future__ import annotations
 
-from src.services.music import (
+from src.services.voice_recovery import (
+    GuildRecoveryState,
     RecoveryAction,
     VoiceHealthSnapshot,
+    event_driven_action,
     should_recover,
 )
 
@@ -329,3 +331,50 @@ class TestShouldRecoverBoundaryAndOrdering:
             now=100.0,
         )
         assert action is RecoveryAction.NONE
+
+
+class TestEventDrivenAction:
+    """`event_driven_action` is the second entry point into the
+    should_recover decision tree -- used by the on_wavelink_websocket_closed
+    handler, which already KNOWS a wedge happened. It must produce the
+    same action shape as the heartbeat path for equivalent state."""
+
+    def test_first_wedge_on_track_returns_recover(self) -> None:
+        state = GuildRecoveryState()
+        action = event_driven_action(state, "track-A", now=100.0)
+        assert action is RecoveryAction.RECOVER
+
+    def test_second_wedge_on_same_track_returns_give_up(self) -> None:
+        # Caller already used the per-track recovery budget. Throttle
+        # has lifted (70s since last_recovery_at=30 with now=100).
+        state = GuildRecoveryState(
+            attempts_bound_to_track="track-A",
+            recovery_attempts_for_track=1,
+            last_recovery_at=30.0,
+        )
+        action = event_driven_action(state, "track-A", now=100.0)
+        assert action is RecoveryAction.GIVE_UP_AND_SKIP
+
+    def test_within_throttle_window_returns_none(self) -> None:
+        # Recovery just happened 5s ago; suppress further action so the
+        # heartbeat doesn't fight a still-handshaking voice link.
+        state = GuildRecoveryState(
+            attempts_bound_to_track="track-A",
+            recovery_attempts_for_track=1,
+            last_recovery_at=95.0,
+        )
+        action = event_driven_action(state, "track-A", now=100.0)
+        assert action is RecoveryAction.NONE
+
+    def test_track_switch_resets_attempts(self) -> None:
+        # We were wedged on track-A and used up the budget. Now we're
+        # on track-B (the queue advanced); the budget must reset and
+        # the event path should be willing to RECOVER again.
+        state = GuildRecoveryState(
+            attempts_bound_to_track="track-A",
+            recovery_attempts_for_track=5,
+        )
+        action = event_driven_action(state, "track-B", now=100.0)
+        assert action is RecoveryAction.RECOVER
+        assert state.attempts_bound_to_track == "track-B"
+        assert state.recovery_attempts_for_track == 0

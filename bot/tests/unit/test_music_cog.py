@@ -17,7 +17,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import discord
 import pytest
 
-from src.cogs.music import MusicCog, _playlist_embed, _track_embed
+from src.cogs.embeds import music_playlist_embed as _playlist_embed
+from src.cogs.embeds import music_track_embed as _track_embed
+from src.cogs.music import MusicCog
 from src.config.settings import Settings
 from src.services.music import PLAYLIST_TRACK_CAP, PlayResult, TrackInfo
 

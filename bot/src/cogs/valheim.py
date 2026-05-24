@@ -7,76 +7,22 @@ Slash commands:
     /valheim stop   -- stop the VM (idempotent)
 
 Each handler defers, calls into src.services.compute / server_query,
-then sends a response so the channel sees the result.
+then sends a response so the channel sees the result. Embed rendering
+lives in src.cogs.embeds.
 """
 
 import discord
 from discord import app_commands
 from discord.ext import commands
 
+from src.cogs.embeds import valheim_status_embed
 from src.config.logging import get_logger
 from src.config.secrets import get_secrets
 from src.config.settings import get_settings
 from src.services import compute, server_query
-from src.services.compute import InstanceState
 from src.services.server_query import LiveStatus
 
 logger = get_logger(__name__)
-
-
-_STATUS_COLORS: dict[str, int] = {
-    "RUNNING": 0x2ECC71,  # green
-    "PROVISIONING": 0xF1C40F,  # amber
-    "STAGING": 0xF1C40F,
-    "STOPPING": 0xE67E22,  # orange
-    "TERMINATED": 0x95A5A6,  # grey
-}
-
-
-def build_status_embed(
-    state: InstanceState,
-    live: LiveStatus | None,
-    password: str | None,
-) -> discord.Embed:
-    """Render an InstanceState + optional LiveStatus + password into a Discord embed.
-
-    Pure function -- no I/O -- so the rendering branches are unit-
-    testable without mocking interactions.
-    """
-    color = _STATUS_COLORS.get(state.status, 0x3498DB)
-    embed = discord.Embed(
-        title=f"Valheim — {state.status}",
-        color=color,
-    )
-    embed.add_field(name="Instance", value=f"`{state.name}` ({state.machine_type})", inline=False)
-    embed.add_field(name="Zone", value=state.zone, inline=True)
-    if state.public_ip:
-        embed.add_field(name="Address", value=f"`{state.public_ip}:2456`", inline=True)
-
-    if live is not None and live.server_running:
-        if live.join_code:
-            # PlayFab/crossplay path: 6-digit code in Valheim's "Join Game" tab.
-            embed.add_field(name="Join code", value=f"`{live.join_code}`", inline=True)
-        else:
-            # Steam-only path (CROSSPLAY=false): no join code exists.
-            # Surface the menu path so first-time joiners aren't lost.
-            embed.add_field(
-                name="How to join",
-                value="Valheim → **Join Game** → **Join IP** → paste the address above",
-                inline=False,
-            )
-        embed.add_field(name="Players", value=str(live.player_count), inline=True)
-        if password:
-            embed.add_field(name="Password", value=f"`{password}`", inline=True)
-    elif state.status == "RUNNING":
-        embed.add_field(
-            name="Game server",
-            value="VM is up but the game server isn't answering yet (Valheim takes "
-            "~60-90s to boot after the VM does). Try `/valheim status` again shortly.",
-            inline=False,
-        )
-
-    return embed
 
 
 class ValheimCog(commands.GroupCog, name="valheim"):
@@ -112,7 +58,7 @@ class ValheimCog(commands.GroupCog, name="valheim"):
         if state.status == "RUNNING":
             password = get_secrets(self._settings.discord_bot_name).valheim_password
 
-        await interaction.followup.send(embed=build_status_embed(state, live, password))
+        await interaction.followup.send(embed=valheim_status_embed(state, live, password))
 
     @app_commands.command(name="start", description="Start the Valheim server")
     async def start(self, interaction: discord.Interaction) -> None:

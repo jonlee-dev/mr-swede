@@ -216,7 +216,7 @@ Queue empty + voice channel empty → bot disconnects voice (after 5min idle).
 | Track fails mid-play (404, region lock, etc.) | Skip silently to next track in queue; log warning. |
 | Bot restarts mid-playback | Bot re-establishes Wavelink WebSocket; current track is lost (queue too); user must re-`/music play`. Watchdog (`bot-watchdog.timer`) restarts the bot on 5 consecutive `/livez` 503s — equivalent of Cloud Run's kill-and-replace. |
 | Lavalink restarts mid-playback (rare — only on `systemctl restart lavalink` or VM reboot) | Same as above. With Lavalink co-tenanted on the same VM, this is now only triggered by config changes (`terraform apply` re-rendering `application.yml`) or the bot-vm reboots; idle-watcher-induced restarts are gone. |
-| Lavalink endpoint changes (used to: VM stop/start → new public IP, stale node session) | **No longer applies** post-co-tenancy. The bot points at `localhost:2333`, which doesn't change. The stale-session handling in `services/music.py` (`_drop_stale_node` + `/v4/info` health check) is retained for the rollback-to-standalone-VM case. |
+| Lavalink endpoint changes (used to: VM stop/start → new public IP, stale node session) | **No longer applies** post-co-tenancy. The bot points at `localhost:2333`, which doesn't change. The dead-node eviction (`node.close(eject=True)`) in `connect_node` is retained because it's still the right call when the bot OR Lavalink restarts. The `_drop_stale_node`/`/v4/info` probe layers were removed 2026-05-13 as part of the Tier 1 migration-dead-code cleanup. |
 
 ### Wavelink integration boundary
 
