@@ -5,6 +5,40 @@ day-to-day control surface; this runbook is for cases where the bot is
 itself broken or where state has drifted enough that Terraform alone
 won't fix it.
 
+## Table of contents
+
+**Bot (Cloud Run / bot-vm)**
+- [1. Bot deploy is failing](#1-bot-deploy-is-failing)
+- [14. Bot is wedged (gateway WS dropped, slash commands hanging)](#14-bot-is-wedged-gateway-ws-dropped-slash-commands-hanging-on-bot-vm)
+- [15. Bot crashes on boot with `AttributeError: 'Request' object has no attribute 'session'`](#15-bot-crashes-on-boot-with-attributeerror-request-object-has-no-attribute-session)
+- [16. Bot deploy — manual flow on bot-vm](#16-bot-deploy--manual-flow-on-bot-vm)
+- [19. Roll back to Cloud Run](#19-roll-back-to-cloud-run)
+
+**Music (Lavalink + Wavelink)**
+- [9. /music play fails with "no nodes are currently CONNECTED" or hangs](#9-music-play-fails-with-no-nodes-are-currently-connected-or-hangs)
+- [10. Spotify URLs fail to resolve](#10-spotify-urls-fail-to-resolve-couldnt-resolve-that-spotify-url-or-no-source-for-that-url)
+- [13. Music plays silently / bot joins VC but no audio](#13-music-plays-silently--bot-joins-vc-but-no-audio)
+- [17. Music dropped mid-session (Discord voice gateway issue)](#17-music-dropped-mid-session-discord-voice-gateway-issue)
+- [18. Voice-recovery auto-skipped every track (Discord-side incident)](#18-voice-recovery-auto-skipped-every-track-discord-side-incident)
+
+**Valheim VM**
+- [1.5 Boot disk full / `df` shows 100%](#15-boot-disk-full--df-shows-100--docker-prune-reclaims-0b)
+- [2. Valheim VM is up but no one can connect](#2-valheim-vm-is-up-but-no-one-can-connect)
+- [3. startup-script failed on first boot](#3-startup-script-failed-on-first-boot)
+- [4. fetch-secrets is failing](#4-fetch-secrets-is-failing)
+- [5. World file corruption suspected](#5-world-file-corruption-suspected)
+- [6. VM disk is full](#6-vm-disk-is-full)
+- [6.5 BepInEx mods aren't loading](#65-bepinex-mods-arent-loading--could-not-load-file-or-assembly-mmhook_assembly_valheim)
+- [6.6 PlanBuild [Server Settings] configuration](#66-planbuild-server-settings-configuration)
+- [6.7 Bumping a mod version](#67-bumping-a-mod-version)
+- [7. "I want to delete and rebuild the VM"](#7-i-want-to-delete-and-rebuild-the-vm)
+- [11. Players experiencing 10-30s lag spikes mid-session ("rubber-banding")](#11-players-experiencing-10-30s-lag-spikes-mid-session-rubber-banding)
+
+**Idle watcher**
+- [8. Idle watcher is stopping a server too aggressively](#8-idle-watcher-is-stopping-a-server-too-aggressively)
+- [12a. Emergency: pause the idle watcher entirely](#12a-emergency-pause-the-idle-watcher-entirely)
+- [12b. Idle watcher stopped the server with active players on it](#12b-idle-watcher-stopped-the-server-with-active-players-on-it)
+
 ## Quick reference
 
 ```bash

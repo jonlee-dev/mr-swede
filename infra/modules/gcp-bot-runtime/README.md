@@ -1,10 +1,22 @@
-# Module: gcp-bot-runtime
+# Module: gcp-bot-runtime — LEGACY / ROLLBACK
 
-Provisions everything needed to run the Mr. Swede Discord bot on Cloud
-Run from a GitHub-hosted source: the runtime SA + IAM, the GSM secret
-container, the Artifact Registry repo, the Cloud Run service itself,
-and the Cloud Build trigger that builds and deploys it on push to
-master.
+> **Status (2026-05-12+):** the bot now runs on
+> [`gcp-bot-vm`](../gcp-bot-vm/) (co-tenanted with Lavalink). This
+> Cloud Run service is kept at `min_instances=0, max_instances=1` as
+> a one-flip rollback option — see runbook §19 to roll back.
+>
+> The `mr-swede-sa` service account this module creates is **also
+> attached to bot-vm** (passed in via `service_account_email`). So
+> when this module is destroyed, the bot SA + its IAM bindings will
+> need to move to `gcp-bot-vm` first.
+
+Provisions everything that ran the bot on Cloud Run from a GitHub-
+hosted source: the runtime SA + IAM, the GSM secret container, the
+Artifact Registry repo, the Cloud Run service itself, and the Cloud
+Build trigger that builds and deploys it on push to master.
+
+The Cloud Build trigger still fires on every master commit, so AR
+keeps getting fresh images. They just sit unused while min=0.
 
 ## What this module creates
 

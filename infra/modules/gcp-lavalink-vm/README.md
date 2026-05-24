@@ -1,4 +1,16 @@
-# Module: gcp-lavalink-vm
+# Module: gcp-lavalink-vm — RETIRED 2026-05-12
+
+> **Status:** retained as a rollback path only. Lavalink now co-tenants
+> the bot's VM via [`gcp-bot-vm`](../gcp-bot-vm/), running on
+> `localhost:2333` alongside `bot.service`. The standalone VM this
+> module provisions exists but doesn't serve traffic. Will be
+> destroyed after the bot-vm soak; until then it's the one-flip
+> rollback if the co-tenant setup misbehaves.
+>
+> The `server/lavalink/` artifacts (application.yml, fetch-secrets,
+> systemd units) are STILL the source of truth for Lavalink config
+> — `gcp-bot-vm` reads them too. Treat that directory as the
+> Lavalink-config home; treat this module as the resource shell.
 
 Provisions a Lavalink audio server on Google Compute Engine. Mirrors
 `gcp-valheim-vm`'s shape so ops procedures translate directly: same

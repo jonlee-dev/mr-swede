@@ -9,17 +9,22 @@ infra/
 ├── envs/
 │   └── prod/           # The only environment for now — a personal/prod deployment
 │       ├── backend.tf      # GCS state backend
-│       ├── main.tf         # Module composition (bootstrap, Valheim VM, Lavalink VM, bot, idle watcher)
+│       ├── main.tf         # Module composition (bootstrap, Valheim VM, bot+Lavalink VM, idle watcher, +rollback)
 │       ├── providers.tf    # Google provider config
 │       ├── variables.tf    # Input variables
 │       └── versions.tf     # TF + provider version pins
 └── modules/
     ├── gcp-bootstrap/      # APIs, TF state bucket, Workload Identity Federation
     ├── gcp-valheim-vm/     # Valheim VM, persistent disk, firewall, password secret
-    ├── gcp-lavalink-vm/    # Lavalink VM (e2-small, no PD), firewall, password secret
-    ├── gcp-bot-runtime/    # Cloud Run service, Artifact Registry, Cloud Build trigger, IAM
-    └── gcp-idle-watcher/   # Multi-target Cloud Function + Scheduler (Valheim + Lavalink)
+    ├── gcp-bot-vm/         # **Current bot home**: e2-small co-tenanting bot.service + lavalink.service
+    ├── gcp-bot-runtime/    # **Legacy/rollback**: Cloud Run mr-swede (min=0 since 2026-05-12)
+    ├── gcp-lavalink-vm/    # **Retired/rollback**: standalone Lavalink VM (folded into gcp-bot-vm 2026-05-12)
+    └── gcp-idle-watcher/   # Cloud Function + Scheduler (Valheim only since 2026-05-12)
 ```
+
+The `gcp-bot-runtime` and `gcp-lavalink-vm` modules are kept as
+one-flip rollback options through the bot-vm soak; both will be
+destroyed once we're confident the co-tenant setup is stable.
 
 ## Prerequisites
 
