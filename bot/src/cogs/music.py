@@ -162,19 +162,38 @@ class MusicCog(commands.GroupCog, name="music"):
         """Lavalink reported an exception during playback (404, region
         lock, decode error, etc.). Wavelink will auto-advance the
         queue; we just surface a visible message and log.
+
+        `payload.exception` is a TypedDict-shaped object with `message`
+        / `severity` / `cause` keys, NOT a plain Exception. `getattr`
+        used to silently fall through to `repr(payload.exception)`
+        which embeds the entire Java stack trace -- one minute later
+        a Discord 50035 "content must be 4000 or fewer in length"
+        rejection swallowed the user-facing "couldn't play X" message.
+        Subscript access gets just the human-readable summary line.
         """
         track_title = getattr(payload.track, "title", "<unknown>") if payload.track else "<unknown>"
-        exc_message = getattr(payload.exception, "message", repr(payload.exception))
+
+        exc = payload.exception
+        try:
+            exc_message = exc["message"]  # type: ignore[index]
+        except (TypeError, KeyError):
+            exc_message = repr(exc)
+        # First line only + 200-char cap so a verbose plugin error
+        # can't blow past Discord's content limits.
+        exc_short = exc_message.splitlines()[0] if exc_message else ""
+        if len(exc_short) > 200:
+            exc_short = exc_short[:197] + "..."
+
         logger.warning(
             "wavelink track_exception",
             track=track_title,
-            exception=exc_message,
+            exception=exc_short,
         )
         guild = getattr(payload.player, "guild", None) if payload.player else None
         if guild is not None:
             await self._announce(
                 guild,
-                f"⚠️ Couldn't play **{track_title}** ({exc_message}). Skipping.",
+                f"⚠️ Couldn't play **{track_title}** ({exc_short}). Skipping.",
             )
 
     @commands.Cog.listener()
@@ -436,6 +455,14 @@ class MusicCog(commands.GroupCog, name="music"):
                 guild_id=guild.id,
             )
             return
+        # Discord's content cap for a regular message is 2000 chars.
+        # We truncate to 1900 to leave headroom for any auto-injected
+        # mentions / role pings. Without this, a caller passing in a
+        # raw exception payload (e.g. on_wavelink_track_exception with
+        # a 4000-char Java stack trace) gets the whole announce
+        # silently 50035'd. 2026-05-25 ate one music incident this way.
+        if len(message) > 1900:
+            message = message[:1897] + "..."
         try:
             await channel.send(message)
         except discord.HTTPException as exc:

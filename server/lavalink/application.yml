@@ -97,11 +97,22 @@ plugins:
     allowSearch: true
     allowDirectVideoIds: true
     allowDirectPlaylistIds: true
+    # YouTube periodically breaks specific client signatures via their
+    # anti-bot rollouts. The plugin tries clients in this order until
+    # one succeeds, so put the ones currently surviving anti-bot
+    # FIRST. 2026-05-25 incident: WEB + WEB_EMBEDDED_PLAYER + ANDROID_VR
+    # all started returning "This video requires login" / "configuration
+    # error". MUSIC and ANDROID_MUSIC tend to be the most resilient
+    # (YouTube can't easily anti-bot YouTube Music without breaking
+    # the Music app itself); IOS + TVHTML5_SIMPLY_EMBEDDED_PLAYER are
+    # documented community fallbacks. Keep WEB at the end so we still
+    # benefit when YouTube re-enables it.
     clients:
       - MUSIC
-      - ANDROID_VR
+      - ANDROID_MUSIC
+      - IOS
+      - TVHTML5_SIMPLY_EMBEDDED_PLAYER
       - WEB
-      - WEBEMBEDDED
 
   lavasrc:
     # When lavasrc resolves a Spotify track to metadata, it then
