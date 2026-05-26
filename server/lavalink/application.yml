@@ -149,7 +149,18 @@ plugins:
     # expose stream-able audio outside its own apps). The %ISRC%
     # provider is a stronger match (matches the recording, not just
     # the title); falls back to a plain title search.
+    #
+    # 2026-05-26 ordering: prefer ytmsearch (YouTube Music) over
+    # ytsearch (regular YouTube). The YouTube Music client (WEB_REMIX /
+    # MUSIC) is what's currently surviving YouTube's anti-bot rollout +
+    # the broken sig-cipher regex -- regular ytsearch hits non-music
+    # clients (TVHTML5/IOS/WEB) and fails most lookups, surfacing as
+    # "No mirror found for track". YouTube Music's catalog covers almost
+    # all real music tracks (which is exactly what Spotify mirrors look
+    # for) so falling back to ytsearch is mostly belt-and-suspenders.
     providers:
+      - "ytmsearch:\"%ISRC%\""
+      - "ytmsearch:%QUERY%"
       - "ytsearch:\"%ISRC%\""
       - "ytsearch:%QUERY%"
     sources:
