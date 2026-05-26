@@ -21,6 +21,7 @@ won't fix it.
 - [17. Music dropped mid-session (Discord voice gateway issue)](#17-music-dropped-mid-session-discord-voice-gateway-issue)
 - [18. Voice-recovery auto-skipped every track (Discord-side incident)](#18-voice-recovery-auto-skipped-every-track-discord-side-incident)
 - [20. YouTube OAuth — first-time bootstrap](#20-youtube-oauth--first-time-bootstrap)
+- [22. yt-cipher public instance flaked / self-host the cipher service](#22-yt-cipher-public-instance-flaked--self-host-the-cipher-service)
 
 **Valheim VM**
 - [1.5 Boot disk full / `df` shows 100%](#15-boot-disk-full--df-shows-100--docker-prune-reclaims-0b)
@@ -814,6 +815,54 @@ echo -n '<NEW_TOKEN>' | gcloud secrets versions add lavalink-youtube-oauth-token
 gcloud compute ssh bot-vm --tunnel-through-iap --zone us-central1-a --project mr-swede \
   --command='sudo systemctl restart lavalink-fetch-secrets.service lavalink.service'
 ```
+
+### 22. yt-cipher public instance flaked / self-host the cipher service
+
+Symptom: `/music play` works for some tracks but suddenly stops for
+all of them with the bot's "couldn't play" message; lavalink journal
+shows `remoteCipher` HTTP timeouts / 5xx, or 429 rate-limits.
+
+We use `https://cipher.kikkia.dev/` (the maintainer's public instance)
+because YouTube's player JS changed shape on 2026-05-25 and the
+youtube-source plugin can't extract the local cipher anymore. The
+public instance is a kindness from kikkia; if it goes down or
+rate-limits us we self-host on bot-vm.
+
+**Self-host in ~5 min:**
+
+1. SSH to bot-vm:
+   ```bash
+   gcloud compute ssh bot-vm --tunnel-through-iap --zone us-central1-a --project mr-swede
+   sudo apt-get install -y docker.io docker-compose
+   sudo systemctl enable --now docker
+   ```
+
+2. Clone + start:
+   ```bash
+   sudo mkdir -p /opt/yt-cipher && cd /opt/yt-cipher
+   sudo git clone https://github.com/kikkia/yt-cipher.git .
+   # Optional: edit docker-compose.yml -> set API_TOKEN to a random value
+   #   (then put it in GSM as `yt-cipher-token` + add fetch-secrets handling).
+   sudo docker compose up -d
+   sudo ss -tlnp | grep 8001  # confirm listening
+   ```
+
+3. Point Lavalink at the local instance in
+   `server/lavalink/application.yml`:
+   ```yaml
+   plugins:
+     youtube:
+       remoteCipher:
+         url: "http://localhost:8001/"
+         password: "..."     # only if you set API_TOKEN
+         userAgent: "mr-swede"
+   ```
+   scp / `terraform apply` (re-renders startup-script) + restart
+   lavalink-fetch-secrets + lavalink.
+
+The self-hosted Deno worker uses ~150MB RAM with the default
+PREPROCESSED_CACHE_SIZE=150. On our e2-small (2GB) that's tight but
+fits if the bot's Python heap stays around 200MB.
 
 ### 21. Roll back to Cloud Run
 

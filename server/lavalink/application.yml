@@ -129,6 +129,19 @@ plugins:
     oauth:
       enabled: ${LAVALINK_OAUTH_ENABLED:false}
       refreshToken: "${LAVALINK_OAUTH_REFRESH_TOKEN:}"
+    # Remote signature-cipher service. As of 2026-05-25, YouTube's player
+    # JS changed shape and youtube-source's local cipher-extraction regex
+    # ("Must find sig function from script") no longer matches; OAuth
+    # alone doesn't help because the failure is in URL deciphering,
+    # not authentication. yt-cipher (https://github.com/kikkia/yt-cipher)
+    # is a Deno service that wraps yt-dlp/ejs and exposes a REST API
+    # for sig deciphering, kept fresh by its maintainer. We point at
+    # the public instance to start; if rate-limits become a problem
+    # (>1000 active players) or we want to remove the SPOF, self-hosting
+    # is a docker-compose-one-liner -- see runbook 22.
+    remoteCipher:
+      url: "https://cipher.kikkia.dev/"
+      userAgent: "mr-swede"
 
   lavasrc:
     # When lavasrc resolves a Spotify track to metadata, it then
