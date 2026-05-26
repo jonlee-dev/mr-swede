@@ -12,7 +12,7 @@ won't fix it.
 - [14. Bot is wedged (gateway WS dropped, slash commands hanging)](#14-bot-is-wedged-gateway-ws-dropped-slash-commands-hanging-on-bot-vm)
 - [15. Bot crashes on boot with `AttributeError: 'Request' object has no attribute 'session'`](#15-bot-crashes-on-boot-with-attributeerror-request-object-has-no-attribute-session)
 - [16. Bot deploy — manual flow on bot-vm](#16-bot-deploy--manual-flow-on-bot-vm)
-- [19. Roll back to Cloud Run](#19-roll-back-to-cloud-run)
+- [21. Roll back to Cloud Run](#21-roll-back-to-cloud-run)
 
 **Music (Lavalink + Wavelink)**
 - [9. /music play fails with "no nodes are currently CONNECTED" or hangs](#9-music-play-fails-with-no-nodes-are-currently-connected-or-hangs)
@@ -20,6 +20,7 @@ won't fix it.
 - [13. Music plays silently / bot joins VC but no audio](#13-music-plays-silently--bot-joins-vc-but-no-audio)
 - [17. Music dropped mid-session (Discord voice gateway issue)](#17-music-dropped-mid-session-discord-voice-gateway-issue)
 - [18. Voice-recovery auto-skipped every track (Discord-side incident)](#18-voice-recovery-auto-skipped-every-track-discord-side-incident)
+- [20. YouTube OAuth — first-time bootstrap](#20-youtube-oauth--first-time-bootstrap)
 
 **Valheim VM**
 - [1.5 Boot disk full / `df` shows 100%](#15-boot-disk-full--df-shows-100--docker-prune-reclaims-0b)
@@ -735,7 +736,86 @@ Try again in 15-30 minutes. If the incident is fixed and music still
 won't stay connected, `sudo systemctl restart bot` to clear any
 stuck per-track recovery state.
 
-### 19. Roll back to Cloud Run
+### 20. YouTube OAuth — first-time bootstrap
+
+Symptom (pre-bootstrap): `/music play` fails with `(yts.version: X.Y.Z) All
+clients failed to load the item.` and the per-client errors mention "This
+video requires login" or signature-cipher / script regex failures.
+
+This is YouTube's anti-bot rejecting unauthenticated requests. The fix
+is OAuth: the youtube-source plugin authenticates as a real Google
+user. The refresh token lives in GSM secret `lavalink-youtube-oauth-token`;
+fetch-secrets loads it into `LAVALINK_OAUTH_REFRESH_TOKEN` at every
+boot. On first run the token is empty so Lavalink enters the device-code
+flow.
+
+**One-time bootstrap procedure:**
+
+1. **Create a burner Google account** (NOT your primary). Throwaway
+   Gmail at <https://accounts.google.com/signup>. Worst case YouTube
+   terminates this account for bot activity; you don't want that to
+   take your real Google services with it.
+
+2. **`terraform apply`** so the `lavalink-youtube-oauth-token` GSM
+   container exists. It'll have no versions yet — that's fine.
+
+3. **SSH to bot-vm and watch Lavalink come up:**
+   ```bash
+   gcloud compute ssh bot-vm --tunnel-through-iap --zone us-central1-a --project mr-swede
+   sudo systemctl restart lavalink-fetch-secrets.service lavalink.service
+   sudo journalctl -u lavalink -f
+   ```
+   Look for output like:
+   ```
+   To give youtube-source access to your account, visit
+     https://www.google.com/device
+   and enter code  XXXX-YYYY
+   ```
+
+4. **Complete the auth on your phone/laptop** signed into the burner
+   account. Visit the URL, enter the code, click through the consent
+   ("youtube-source wants to access your YouTube data"). Approve.
+
+5. **Watch the journal** — within a second or two the plugin logs:
+   ```
+   OAUTH INTEGRATION: Refresh token: ya29.a0Ad52N...   <SAVE THIS>
+   ```
+   Copy the entire token string (everything after `Refresh token: `).
+
+6. **Seed the GSM secret** with the token:
+   ```bash
+   # Replace <TOKEN> below with the actual ya29... string.
+   echo -n '<TOKEN>' | gcloud secrets versions add lavalink-youtube-oauth-token \
+     --project=mr-swede --data-file=-
+   ```
+
+7. **Restart Lavalink** so it picks up the token via fetch-secrets:
+   ```bash
+   sudo systemctl restart lavalink-fetch-secrets.service lavalink.service
+   sudo journalctl -u lavalink-fetch-secrets.service -n 20 --no-pager
+   # Look for: "Loaded YouTube OAuth refresh token from Secret Manager."
+   sudo journalctl -u lavalink -n 50 --no-pager | grep -i oauth
+   # Should see OAuth init succeed, NOT a device-code prompt.
+   ```
+
+8. **Test `/music play <song>` in Discord.** If a track plays — done.
+   The token is good for ~6 months of inactive use; the bot's weekly
+   use will keep it alive indefinitely.
+
+**If the burner account gets terminated** (Google flags it for bot
+activity — happens, but rare at hobby volume): redo steps 1-7 with
+a fresh burner. The GSM secret version history retains old tokens;
+the latest active version is what fetch-secrets reads.
+
+**Rotating manually** (proactive burner rotation):
+```bash
+echo -n '<NEW_TOKEN>' | gcloud secrets versions add lavalink-youtube-oauth-token \
+  --project=mr-swede --data-file=-
+gcloud compute ssh bot-vm --tunnel-through-iap --zone us-central1-a --project mr-swede \
+  --command='sudo systemctl restart lavalink-fetch-secrets.service lavalink.service'
+```
+
+### 21. Roll back to Cloud Run
 
 For the ~1 week soak (or longer if needed), `gcp-bot-runtime` is kept
 at `min=0, max=1`. To restore traffic:

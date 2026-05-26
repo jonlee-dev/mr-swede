@@ -3,7 +3,7 @@
 # metadata server, then write them to /etc/lavalink/secret.env so
 # lavalink.service picks them up via EnvironmentFile=.
 #
-# Two secrets handled here:
+# Three secrets handled here:
 #
 #   1. lavalink-server-password (REQUIRED)
 #      A short bytestring used as the password the bot authenticates
@@ -22,6 +22,16 @@
 #      will boot and serve YouTube/HTTP traffic; Spotify URLs will
 #      error cleanly until the user seeds the credentials.
 #
+#   3. lavalink-youtube-oauth-token (OPTIONAL, bootstrap-then-required)
+#      A Google OAuth refresh token that the youtube-source plugin
+#      uses to authenticate as a real user against YouTube, bypassing
+#      anti-bot rollouts. ALWAYS enable OAuth (LAVALINK_OAUTH_ENABLED=true);
+#      if no token is seeded yet, leave LAVALINK_OAUTH_REFRESH_TOKEN
+#      empty and the plugin will print a device-code URL on boot for
+#      the operator to complete the one-time auth dance. After the
+#      operator seeds the resulting token, subsequent boots load it
+#      silently. See docs/runbook.md scenario 20.
+#
 # Runs as a oneshot systemd unit (lavalink-fetch-secrets.service)
 # BEFORE lavalink.service starts.
 
@@ -29,6 +39,7 @@ set -euo pipefail
 
 PASSWORD_SECRET_NAME="${PASSWORD_SECRET_NAME:-lavalink-server-password}"
 SPOTIFY_SECRET_NAME="${SPOTIFY_SECRET_NAME:-spotify-client-credentials}"
+OAUTH_SECRET_NAME="${OAUTH_SECRET_NAME:-lavalink-youtube-oauth-token}"
 SECRET_FILE="/etc/lavalink/secret.env"
 META="http://metadata.google.internal/computeMetadata/v1"
 HDR="Metadata-Flavor: Google"
@@ -95,3 +106,47 @@ else
 fi
 
 rm -f "$SPOTIFY_TMP"
+
+# ---------------------------------------------------------------------------
+# 3. YouTube OAuth refresh token (optional bootstrap-then-required).
+#    Always emit LAVALINK_OAUTH_ENABLED=true; the token field is empty
+#    on first boot so the plugin enters device-code mode, then seeded
+#    via GSM after the operator completes the one-time auth.
+# ---------------------------------------------------------------------------
+
+printf 'LAVALINK_OAUTH_ENABLED=true\n' >> "$SECRET_FILE"
+
+OAUTH_TMP="$(mktemp)"
+OAUTH_HTTP_CODE="$(curl -sS -o "$OAUTH_TMP" -w '%{http_code}' \
+  -H "Authorization: Bearer ${ACCESS_TOKEN}" \
+  "https://secretmanager.googleapis.com/v1/projects/${PROJECT_ID}/secrets/${OAUTH_SECRET_NAME}/versions/latest:access" || true)"
+
+if [[ "$OAUTH_HTTP_CODE" == "200" ]]; then
+  OAUTH_TOKEN="$(python3 -c 'import json,sys,base64; d=json.load(open(sys.argv[1])); print(base64.b64decode(d["payload"]["data"]).decode("utf-8").strip())' "$OAUTH_TMP")"
+  if [[ -z "$OAUTH_TOKEN" ]]; then
+    echo "WARN: YouTube OAuth secret has an empty payload -- entering device-code flow on boot." >&2
+    printf 'LAVALINK_OAUTH_REFRESH_TOKEN=\n' >> "$SECRET_FILE"
+  else
+    # Real token loaded. We DON'T log a length or any portion of the
+    # token (a portion of a refresh token is enough to attempt replay).
+    echo "Loaded YouTube OAuth refresh token from Secret Manager."
+    printf 'LAVALINK_OAUTH_REFRESH_TOKEN=%s\n' "$OAUTH_TOKEN" >> "$SECRET_FILE"
+  fi
+elif [[ "$OAUTH_HTTP_CODE" == "404" ]]; then
+  # Either the secret container doesn't exist yet (pre-TF-apply) OR
+  # the container exists but has no versions (post-TF-apply, before
+  # the operator completes the device-code flow). Either way, leave
+  # the token empty so the plugin enters device-code mode.
+  echo "WARN: YouTube OAuth secret not seeded -- Lavalink will print a device-code URL on boot. See docs/runbook.md scenario 20." >&2
+  printf 'LAVALINK_OAUTH_REFRESH_TOKEN=\n' >> "$SECRET_FILE"
+else
+  # Hard failure -- 403 (IAM missing), 5xx, etc. We DON'T want to
+  # silently boot Lavalink in degraded mode because that would just
+  # keep the user broken without surfacing why. Fail loudly here.
+  echo "ERROR: failed to fetch YouTube OAuth secret (HTTP $OAUTH_HTTP_CODE):" >&2
+  cat "$OAUTH_TMP" >&2 || true
+  rm -f "$OAUTH_TMP"
+  exit 1
+fi
+
+rm -f "$OAUTH_TMP"

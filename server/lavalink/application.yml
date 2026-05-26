@@ -102,17 +102,29 @@ plugins:
     # one succeeds, so put the ones currently surviving anti-bot
     # FIRST. 2026-05-25 incident: WEB + WEB_EMBEDDED_PLAYER + ANDROID_VR
     # all started returning "This video requires login" / "configuration
-    # error". MUSIC and ANDROID_MUSIC tend to be the most resilient
-    # (YouTube can't easily anti-bot YouTube Music without breaking
-    # the Music app itself); IOS + TVHTML5_SIMPLY_EMBEDDED_PLAYER are
-    # documented community fallbacks. Keep WEB at the end so we still
-    # benefit when YouTube re-enables it.
+    # error". OAuth (below) is the durable fix; this list is the
+    # fallback ordering for clients that can be used WITHOUT OAuth +
+    # the resolution preference once OAuth is active.
     clients:
       - MUSIC
       - ANDROID_MUSIC
       - IOS
       - TVHTML5_SIMPLY_EMBEDDED_PLAYER
       - WEB
+    # YouTube OAuth -- authenticates as a real Google user (burner
+    # account; see runbook scenario 20) so anti-bot doesn't reject our
+    # requests. The refresh token lives in GSM (lavalink-youtube-oauth-token)
+    # and is loaded into LAVALINK_OAUTH_REFRESH_TOKEN by fetch-secrets.sh
+    # at boot. On the FIRST boot before the operator has seeded a
+    # token, refreshToken expands to empty string AND we leave
+    # skipInitialization false (Spring default), so the plugin enters
+    # device-code mode, prints a URL + code to the journal, and waits
+    # for the operator to complete the dance. Once the token is seeded
+    # via gcloud secrets versions add, subsequent boots load it
+    # silently with no human in the loop.
+    oauth:
+      enabled: ${LAVALINK_OAUTH_ENABLED:false}
+      refreshToken: "${LAVALINK_OAUTH_REFRESH_TOKEN:}"
 
   lavasrc:
     # When lavasrc resolves a Spotify track to metadata, it then
