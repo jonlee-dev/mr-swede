@@ -97,19 +97,23 @@ plugins:
     allowSearch: true
     allowDirectVideoIds: true
     allowDirectPlaylistIds: true
-    # YouTube periodically breaks specific client signatures via their
-    # anti-bot rollouts. The plugin tries clients in this order until
-    # one succeeds, so put the ones currently surviving anti-bot
-    # FIRST. 2026-05-25 incident: WEB + WEB_EMBEDDED_PLAYER + ANDROID_VR
-    # all started returning "This video requires login" / "configuration
-    # error". OAuth (below) is the durable fix; this list is the
-    # fallback ordering for clients that can be used WITHOUT OAuth +
-    # the resolution preference once OAuth is active.
+    # OAuth (below) is the durable anti-bot bypass. ONLY the `TV` client
+    # supports OAuth (per the youtube-source compatibility matrix), so
+    # it goes FIRST -- authenticated requests get the best resilience
+    # to YouTube's "requires login" rejections. The rest are unauthenticated
+    # fallbacks for cases where TV can't serve a specific format (TV
+    # doesn't return Opus, so MUSIC / ANDROID_MUSIC / IOS / WEB cover
+    # search results and any track TV won't decode). 2026-05-25 incident:
+    # WEB + WEB_EMBEDDED_PLAYER + ANDROID_VR all started failing simultaneously,
+    # which is why OAuth is essential rather than aspirational.
+    # TVHTML5_SIMPLY_EMBEDDED_PLAYER from the earlier attempt was silently
+    # dropped by the plugin ("Failed to resolve into a Client") -- it's
+    # not a recognized identifier in 1.18.1.
     clients:
+      - TV
       - MUSIC
       - ANDROID_MUSIC
       - IOS
-      - TVHTML5_SIMPLY_EMBEDDED_PLAYER
       - WEB
     # YouTube OAuth -- authenticates as a real Google user (burner
     # account; see runbook scenario 20) so anti-bot doesn't reject our
