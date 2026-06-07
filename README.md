@@ -48,11 +48,12 @@ See [TODO.md](./TODO.md) for the cutover checklist and the manual prerequisites 
 | `/valheim status` | Show VM state, PlayFab join code, server password, and player count |
 | `/valheim start` | Start the Valheim VM (idempotent) |
 | `/valheim stop` | Stop the Valheim VM (idempotent) |
-| `/music play <query>` | Joins your voice channel, plays a YouTube search/URL or a Spotify track / playlist / album URL. YouTube playlist URLs work too. Up to 100 tracks per URL. (Pre-2026-05-12 this also auto-started a standalone Lavalink VM; Lavalink is now co-tenanted with the bot at `localhost:2333`, so first-play of a session is instant.) |
+| `/music play <query>` | Joins your voice channel, plays a YouTube search/URL or a Spotify track / playlist / album URL. YouTube playlist URLs work too. Up to 1000 tracks per URL. (Pre-2026-05-12 this also auto-started a standalone Lavalink VM; Lavalink is now co-tenanted with the bot at `localhost:2333`, so first-play of a session is instant.) |
 | `/music skip` | Skip the current track |
 | `/music pause` / `/music resume` | Toggle playback |
+| `/music clear` | Clear the upcoming queue but keep the current track playing |
 | `/music stop` | Stop playback, clear the queue, leave the voice channel |
-| `/music queue` | Show the current queue |
+| `/music queue` | Show the current queue (lists the next ~10, reports the true total) |
 | `/music nowplaying` | Show the current track + position |
 | `/music volume <0-100>` | Set playback volume |
 | `/music shuffle` | Shuffle the queue |

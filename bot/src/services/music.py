@@ -42,11 +42,19 @@ class TrackInfo:
 
 
 # Hard cap on how many tracks a single playlist URL can enqueue. Set to
-# 100 to comfortably cover normal Spotify/YouTube playlists while
-# preventing a runaway 5000-track YouTube auto-mix from filling the
-# queue. If a playlist exceeds this, we keep the first PLAYLIST_TRACK_CAP
-# tracks and surface "truncated to N/M" in the embed.
-PLAYLIST_TRACK_CAP = 100
+# 1000 (2026-05-26 bump from 100) to cover large user playlists while
+# still preventing a runaway YouTube auto-mix / radio from filling the
+# queue unboundedly. If a playlist exceeds this, we keep the first
+# PLAYLIST_TRACK_CAP tracks and surface "truncated to N/M" in the embed.
+#
+# Memory: each queued entry is a wavelink.Playable holding metadata only
+# (~2-3KB); 1000 entries is a few MB per guild. Mirror resolution for
+# Spotify tracks stays LAZY (happens at play-time, not enqueue), so a
+# 1000-track load is just metadata paging, not 1000 YouTube searches.
+# MUST stay in sync with the Lavalink-side limits in
+# server/lavalink/application.yml (youtubePlaylistLoadLimit +
+# lavasrc.spotify.{playlistLoadLimit,albumLoadLimit}).
+PLAYLIST_TRACK_CAP = 1000
 
 
 @dataclass(frozen=True)
@@ -349,6 +357,32 @@ async def stop_and_disconnect(guild: discord.Guild) -> bool:
     return True
 
 
+async def clear_queue(guild: discord.Guild) -> int:
+    """Clear the UPCOMING queue without touching the current track or
+    leaving voice. Returns the number of tracks removed (0 if the queue
+    was already empty or we're not connected).
+
+    Contrast with stop_and_disconnect (stops the current track + clears
+    + disconnects) and skip (advances past the current track). This is
+    the "I queued a bunch of junk, wipe what's next but keep this song"
+    operation.
+
+    We also clear `auto_queue` defensively: with AutoPlayMode.partial it
+    stays empty (we don't fetch recommendations), but clearing it costs
+    nothing and guards against a future autoplay-mode change leaving
+    stale recommendations behind.
+    """
+    player: wavelink.Player | None = guild.voice_client  # type: ignore[assignment]
+    if player is None:
+        return 0
+    count = len(player.queue)
+    player.queue.clear()
+    auto_queue = getattr(player, "auto_queue", None)
+    if auto_queue is not None:
+        auto_queue.clear()
+    return count
+
+
 def now_playing(guild: discord.Guild) -> TrackInfo | None:
     """Return the currently playing track, or None."""
     player: wavelink.Player | None = guild.voice_client  # type: ignore[assignment]
@@ -368,6 +402,18 @@ def queue_snapshot(guild: discord.Guild, limit: int = 10) -> list[TrackInfo]:
             break
         out.append(_to_track_info(track))
     return out
+
+
+def queue_length(guild: discord.Guild) -> int:
+    """Total number of tracks waiting in the upcoming queue (excludes the
+    currently-playing track). Lets the cog show "showing 10 of N" so a
+    1000-track queue isn't silently misrepresented as just the 10 we
+    list in the embed.
+    """
+    player: wavelink.Player | None = guild.voice_client  # type: ignore[assignment]
+    if player is None:
+        return 0
+    return len(player.queue)
 
 
 async def set_volume(guild: discord.Guild, volume_percent: int) -> bool:
@@ -427,11 +473,13 @@ __all__ = [
     "PlayResult",
     "TrackEndEventPayload",
     "TrackInfo",
+    "clear_queue",
     "connect_node",
     "format_duration",
     "now_playing",
     "pause",
     "play",
+    "queue_length",
     "queue_snapshot",
     "resume",
     "set_loop",

@@ -580,11 +580,28 @@ class MusicCog(commands.GroupCog, name="music"):
         else:
             await interaction.followup.send("Already stopped.", ephemeral=True)
 
+    @app_commands.command(
+        name="clear", description="Clear the upcoming queue (keeps the current track playing)"
+    )
+    @requires_channel("music_command_channel_id")
+    @requires_guild
+    async def clear(self, interaction: discord.Interaction) -> None:
+        n = await music.clear_queue(interaction.guild)
+        if n == 0:
+            await interaction.followup.send("Queue is already empty.", ephemeral=True)
+        else:
+            plural = "track" if n == 1 else "tracks"
+            await interaction.followup.send(
+                f"Cleared {n} {plural} from the queue. (Current track keeps playing — "
+                "use `/music skip` or `/music stop` for that.)"
+            )
+
     @app_commands.command(name="queue", description="Show the next ~10 queued tracks")
     @requires_channel("music_command_channel_id")
     @requires_guild
     async def queue(self, interaction: discord.Interaction) -> None:
         current = music.now_playing(interaction.guild)
+        total = music.queue_length(interaction.guild)
         upcoming = music.queue_snapshot(interaction.guild, limit=10)
 
         if current is None and not upcoming:
@@ -603,7 +620,15 @@ class MusicCog(commands.GroupCog, name="music"):
                 f"{i + 1}. **{t.title}** ({music.format_duration(t.duration_ms)})"
                 for i, t in enumerate(upcoming)
             ]
-            embed.add_field(name=f"Up next ({len(upcoming)})", value="\n".join(lines), inline=False)
+            # Header shows the true total so a 1000-track queue isn't
+            # misrepresented as just the 10 we list. "Up next (10 of 847)"
+            # when truncated; plain "Up next (8)" when we're showing all.
+            header = (
+                f"Up next ({len(upcoming)} of {total})"
+                if total > len(upcoming)
+                else f"Up next ({total})"
+            )
+            embed.add_field(name=header, value="\n".join(lines), inline=False)
         await interaction.followup.send(embed=embed)
 
     @app_commands.command(name="nowplaying", description="Show the current track")

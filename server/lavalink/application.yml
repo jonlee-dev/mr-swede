@@ -51,12 +51,12 @@ lavalink:
     resamplingQuality: LOW
     trackStuckThresholdMs: 10000
     useSeekGhosting: true
-    # Cap how many tracks a YouTube playlist URL can resolve to. 100
-    # comfortably covers normal user-curated playlists; tracks beyond
-    # are surfaced to the user as a "truncated" warning by the bot.
-    # Spotify playlists/albums are capped separately under
-    # plugins.lavasrc.spotify.* below.
-    youtubePlaylistLoadLimit: 100
+    # Cap how many tracks a YouTube playlist URL can resolve to. Bumped
+    # 100 -> 1000 on 2026-05-26; tracks beyond are surfaced to the user
+    # as a "truncated" warning by the bot. MUST stay in sync with the
+    # bot's PLAYLIST_TRACK_CAP (services/music.py). Spotify playlists/
+    # albums are capped separately under plugins.lavasrc.spotify.* below.
+    youtubePlaylistLoadLimit: 1000
     # Tightened from 5s -> 1s on 2026-05-13 so the bot's voice-health
     # heartbeat (in bot/src/cogs/music.py) has a 1s-fresh signal to
     # compare consecutive samples against. Costs nothing at hobby scale:
@@ -187,11 +187,14 @@ plugins:
       # US gives the broadest coverage for our friend group; can be
       # overridden via env if needed.
       countryCode: "${LAVASRC_SPOTIFY_COUNTRY:US}"
-      # Same 100-track cap as youtubePlaylistLoadLimit so the bot's
-      # PLAYLIST_TRACK_CAP stays the only place that ever rejects
-      # tracks for being too many.
-      playlistLoadLimit: 100
-      albumLoadLimit: 100
+      # Same 1000-track cap as youtubePlaylistLoadLimit (bumped from 100
+      # on 2026-05-26) so the bot's PLAYLIST_TRACK_CAP stays the single
+      # place that rejects tracks for being too many. lavasrc pages
+      # Spotify results by 100, so a full 1000-track playlist load is up
+      # to 10 API calls (~3s); the bot defers the interaction so there's
+      # no Discord timeout.
+      playlistLoadLimit: 1000
+      albumLoadLimit: 1000
 
 logging:
   file:

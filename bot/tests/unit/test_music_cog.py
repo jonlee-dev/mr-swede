@@ -134,11 +134,15 @@ class TestPlaylistEmbed:
 
     def test_truncation_field_appears_only_when_truncated(self):
         no_trunc = _playlist_embed(_result_playlist(extra=9, truncated_from=None))
-        with_trunc = _playlist_embed(_result_playlist(extra=99, truncated_from=523))
+        # Realistic post-2026-05-26 scenario: a 1500-track playlist
+        # truncated to the 1000-track cap. extra=999 -> 1 first + 999 = 1000.
+        with_trunc = _playlist_embed(
+            _result_playlist(extra=PLAYLIST_TRACK_CAP - 1, truncated_from=1500)
+        )
 
         assert not any(f.name == "Truncated" for f in no_trunc.fields)
         trunc_text = next(f.value for f in with_trunc.fields if f.name == "Truncated")
-        assert "523" in trunc_text
+        assert "1500" in trunc_text
         assert str(PLAYLIST_TRACK_CAP) in trunc_text
 
     def test_unresolved_field_appears_only_when_some_unresolved(self):
@@ -274,3 +278,81 @@ class TestPlayCommand:
         send_call = interaction.followup.send.call_args
         assert "couldn't play" in send_call.args[0].lower()
         assert send_call.kwargs.get("ephemeral") is True
+
+
+class TestClearCommand:
+    """`/music clear` wipes the upcoming queue but keeps the current
+    track playing. Distinct from /music stop (which disconnects)."""
+
+    async def test_clear_reports_count_when_nonempty(self, cog: MusicCog):
+        interaction = _interaction()
+        with patch("src.cogs.music.music.clear_queue", AsyncMock(return_value=5)):
+            await MusicCog.clear.callback(cog, interaction)
+
+        send_call = interaction.followup.send.call_args
+        assert "5 tracks" in send_call.args[0]
+        # Not ephemeral -- a successful clear is worth showing the channel.
+        assert send_call.kwargs.get("ephemeral") is not True
+
+    async def test_clear_uses_singular_for_one_track(self, cog: MusicCog):
+        interaction = _interaction()
+        with patch("src.cogs.music.music.clear_queue", AsyncMock(return_value=1)):
+            await MusicCog.clear.callback(cog, interaction)
+
+        send_call = interaction.followup.send.call_args
+        assert "1 track" in send_call.args[0]
+        assert "1 tracks" not in send_call.args[0]
+
+    async def test_clear_empty_queue_is_ephemeral(self, cog: MusicCog):
+        interaction = _interaction()
+        with patch("src.cogs.music.music.clear_queue", AsyncMock(return_value=0)):
+            await MusicCog.clear.callback(cog, interaction)
+
+        send_call = interaction.followup.send.call_args
+        assert "already empty" in send_call.args[0].lower()
+        assert send_call.kwargs.get("ephemeral") is True
+
+
+class TestQueueCommand:
+    """`/music queue` shows up to 10 tracks but reports the true total
+    so a 1000-track queue isn't misrepresented as just the 10 listed."""
+
+    async def test_queue_shows_total_when_truncated(self, cog: MusicCog):
+        interaction = _interaction()
+        upcoming = [_track_info(title=f"Track {i}") for i in range(10)]
+        with (
+            patch("src.cogs.music.music.now_playing", return_value=_track_info(title="Now")),
+            patch("src.cogs.music.music.queue_length", return_value=847),
+            patch("src.cogs.music.music.queue_snapshot", return_value=upcoming),
+        ):
+            await MusicCog.queue.callback(cog, interaction)
+
+        embed = interaction.followup.send.call_args.kwargs["embed"]
+        up_next = next(f for f in embed.fields if f.name.startswith("Up next"))
+        assert "10 of 847" in up_next.name
+
+    async def test_queue_shows_plain_count_when_all_shown(self, cog: MusicCog):
+        interaction = _interaction()
+        upcoming = [_track_info(title=f"Track {i}") for i in range(3)]
+        with (
+            patch("src.cogs.music.music.now_playing", return_value=None),
+            patch("src.cogs.music.music.queue_length", return_value=3),
+            patch("src.cogs.music.music.queue_snapshot", return_value=upcoming),
+        ):
+            await MusicCog.queue.callback(cog, interaction)
+
+        embed = interaction.followup.send.call_args.kwargs["embed"]
+        up_next = next(f for f in embed.fields if f.name.startswith("Up next"))
+        assert up_next.name == "Up next (3)"
+
+    async def test_queue_empty_and_idle(self, cog: MusicCog):
+        interaction = _interaction()
+        with (
+            patch("src.cogs.music.music.now_playing", return_value=None),
+            patch("src.cogs.music.music.queue_length", return_value=0),
+            patch("src.cogs.music.music.queue_snapshot", return_value=[]),
+        ):
+            await MusicCog.queue.callback(cog, interaction)
+
+        send_call = interaction.followup.send.call_args
+        assert "empty" in send_call.args[0].lower()
