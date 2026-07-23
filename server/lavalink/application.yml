@@ -69,19 +69,25 @@ lavalink:
     gc-warnings: true
 
   plugins:
-    # Bumped 1.13.5 -> 1.18.1 on 2026-05-09 after observing tracks
-    # cutting out within 12-13 seconds. Lavalink's startup banner
-    # printed: "YOUTUBE-SOURCE VERSION 1.18.1 AVAILABLE / Update to
-    # ensure the YouTube source remains operational!" -- YouTube
-    # periodically breaks older versions of the unofficial plugin
-    # (bot-detection / API changes), and the symptom is exactly what
-    # we saw: SOME tracks play normally, others get cut after a few
-    # seconds depending on which video format YouTube is willing to
-    # serve. Bumping to the version the banner suggests is the
-    # canonical fix.
-    - dependency: "dev.lavalink.youtube:youtube-plugin:1.18.1"
-      repository: "https://maven.lavalink.dev/releases"
-      snapshot: false
+    # 2026-07-23: switched from released 1.18.1 to a SNAPSHOT build off
+    # main. YouTube's mid-2026 anti-bot + player-JS changes broke 1.18.1
+    # in ways OAuth + remote-cipher only partially fixed -- residual
+    # per-client errors ("Something went wrong when decoding the track",
+    # "No supported audio streams available", itag failures). The
+    # maintainer has been fixing these on `main` but hasn't cut a
+    # release (maven still lists 1.18.1 as latest). The pinned snapshot
+    # below includes the fixes we need:
+    #   e66ec36c (2026-07-16) Fix itag 18 playback
+    #   43414e3f (2026-07-05) Update client versions
+    #   07180c1f (2026-07-16) Fix ResponseStatusException Spring compat
+    # Pinned to a specific commit hash (NOT a floating -SNAPSHOT) so a
+    # future upstream regression can't silently break us -- bump this
+    # deliberately after checking the youtube-source commit log. To
+    # revert: set version back to 1.18.1 + repository releases +
+    # snapshot false.
+    - dependency: "dev.lavalink.youtube:youtube-plugin:c46ab888ee12bc4bcb37c8ebcaf180e85ae30368"
+      repository: "https://maven.lavalink.dev/snapshots"
+      snapshot: true
     # lavasrc: Spotify URL resolution. Pinned to a 4.x stable release
     # known to work against Lavalink 4.2.x. Bumping it should be a
     # deliberate change with a smoke-test pass (Spotify track URL,
