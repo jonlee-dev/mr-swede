@@ -69,23 +69,28 @@ lavalink:
     gc-warnings: true
 
   plugins:
-    # 2026-07-23: switched from released 1.18.1 to a SNAPSHOT build off
-    # main. YouTube's mid-2026 anti-bot + player-JS changes broke 1.18.1
-    # in ways OAuth + remote-cipher only partially fixed -- residual
-    # per-client errors ("Something went wrong when decoding the track",
-    # "No supported audio streams available", itag failures). The
-    # maintainer has been fixing these on `main` but hasn't cut a
-    # release (maven still lists 1.18.1 as latest). The pinned snapshot
-    # below includes the fixes we need:
-    #   e66ec36c (2026-07-16) Fix itag 18 playback
-    #   43414e3f (2026-07-05) Update client versions
-    #   07180c1f (2026-07-16) Fix ResponseStatusException Spring compat
-    # Pinned to a specific commit hash (NOT a floating -SNAPSHOT) so a
-    # future upstream regression can't silently break us -- bump this
-    # deliberately after checking the youtube-source commit log. To
-    # revert: set version back to 1.18.1 + repository releases +
-    # snapshot false.
-    - dependency: "dev.lavalink.youtube:youtube-plugin:c46ab888ee12bc4bcb37c8ebcaf180e85ae30368"
+    # YouTube's anti-bot + player-JS churn breaks the released plugin
+    # every few weeks; we track a PINNED main-branch snapshot and bump
+    # the hash when a new break hits. History:
+    #   1.18.1 (release)  -> broke 2026-05 (OAuth + remoteCipher only
+    #                        partially fixed; residual itag/decode errors)
+    #   c46ab888 (Jul 17) -> broke 2026-08-10 with new signatures:
+    #                        "TVHTML5: The page needs to be reloaded",
+    #                        "IOS: This video is unavailable",
+    #                        "WEB: No supported audio streams available"
+    #   f45bbb7a (Aug 19) <- CURRENT. Upstream shipped same-day fixes
+    #                        mapping exactly to those symptoms:
+    #     b33460b3 Use a PlayStation 4 User-Agent for the TV client (#233)
+    #     6579cdfd make IOS playable
+    #     34ee4c5f update client version to 21.02.35 (#231)
+    #     f45bbb7a Recover total length when formats omit contentLength (#235)
+    # Pinned to the exact commit (NOT floating -SNAPSHOT) so an upstream
+    # regression can't silently land. BUMP PROCEDURE (runbook 23): check
+    # the youtube-source commit log for fixes newer than this hash, pick
+    # the latest, update the coordinate below, delete the old plugin jar
+    # from /opt/lavalink/plugins/, restart lavalink. Revert: 1.18.1 +
+    # releases repo + snapshot false.
+    - dependency: "dev.lavalink.youtube:youtube-plugin:f45bbb7aebfcbc1c553769e04af6cd43afa8b7c3"
       repository: "https://maven.lavalink.dev/snapshots"
       snapshot: true
     # lavasrc: Spotify URL resolution. Pinned to a 4.x stable release

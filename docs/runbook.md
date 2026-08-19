@@ -22,6 +22,7 @@ won't fix it.
 - [18. Voice-recovery auto-skipped every track (Discord-side incident)](#18-voice-recovery-auto-skipped-every-track-discord-side-incident)
 - [20. YouTube OAuth — first-time bootstrap](#20-youtube-oauth--first-time-bootstrap)
 - [22. yt-cipher public instance flaked / self-host the cipher service](#22-yt-cipher-public-instance-flaked--self-host-the-cipher-service)
+- [23. "All clients failed to load the item" — bump the youtube-plugin snapshot](#23-all-clients-failed-to-load-the-item--bump-the-youtube-plugin-snapshot)
 
 **Valheim VM**
 - [1.5 Boot disk full / `df` shows 100%](#15-boot-disk-full--df-shows-100--docker-prune-reclaims-0b)
@@ -863,6 +864,73 @@ rate-limits us we self-host on bot-vm.
 The self-hosted Deno worker uses ~150MB RAM with the default
 PREPROCESSED_CACHE_SIZE=150. On our e2-small (2GB) that's tight but
 fits if the bot's Python heap stays around 200MB.
+
+### 23. "All clients failed to load the item" — bump the youtube-plugin snapshot
+
+The recurring one (hit 2026-05, -07, -08). YouTube periodically changes
+its anti-bot / player-JS / client-version handshake and the released
+youtube-plugin lags. We track a PINNED snapshot off youtube-source's
+`main` and bump the hash each time. Symptoms rotate but always end in
+`AllClientsFailedException: All clients failed to load the item`, with
+per-client lines like "The page needs to be reloaded", "This video is
+unavailable", "No supported audio streams available", "Must find sig
+function from script".
+
+**First, confirm it's actually the plugin (not OAuth/cipher/Discord):**
+```bash
+gcloud compute ssh bot-vm --tunnel-through-iap --zone us-central1-a --project mr-swede
+# per-client failure detail:
+sudo journalctl -u lavalink --no-pager | grep -E "Client \[|AllClientsFailed" | tail -8
+# OAuth still refreshing? (should see "access token refreshed successfully" at each boot)
+sudo journalctl -u lavalink --no-pager | grep -i "access token" | tail -3
+# cipher service up?
+curl -s -o /dev/null -w "%{http_code}\n" https://cipher.kikkia.dev/
+```
+If OAuth refreshes and the cipher returns 200, it's the plugin.
+
+**Bump procedure:**
+1. Check youtube-source for fixes newer than the currently-pinned hash
+   (the hash is in `server/lavalink/application.yml`):
+   ```bash
+   curl -s "https://api.github.com/repos/lavalink-devs/youtube-source/commits?per_page=15" \
+     | python3 -c 'import json,sys; [print(c["sha"][:8], c["commit"]["committer"]["date"][:10], c["commit"]["message"].splitlines()[0][:70]) for c in json.load(sys.stdin)]'
+   ```
+   Look for commits mentioning client versions, User-Agent, itag/format,
+   contentLength, cipher, "playable". Grab the **latest full SHA**:
+   ```bash
+   curl -s "https://maven.lavalink.dev/snapshots/dev/lavalink/youtube/youtube-plugin/maven-metadata.xml" | grep latest
+   ```
+2. Confirm its jar exists:
+   ```bash
+   SHA=<full-hash>
+   curl -sI "https://maven.lavalink.dev/snapshots/dev/lavalink/youtube/youtube-plugin/$SHA/youtube-plugin-$SHA.jar" | head -1
+   ```
+3. Update the `dependency:` coordinate in `server/lavalink/application.yml`
+   to the new hash (keep `repository: .../snapshots` + `snapshot: true`),
+   commit, push.
+4. Deploy — **must delete the old plugin jar** so Lavalink downloads the
+   new one:
+   ```bash
+   # scp the new application.yml to /tmp, then:
+   sudo cp /tmp/application.yml /opt/lavalink/application.yml
+   sudo chown lavalink:lavalink /opt/lavalink/application.yml
+   sudo rm -f /opt/lavalink/plugins/youtube-plugin-*.jar
+   sudo systemctl restart lavalink.service
+   ```
+5. **Verify with the stream route** (proves format-load + cipher + audio,
+   not just metadata). Resolve a videoId then hit `/youtube/stream/{id}`:
+   ```bash
+   PW=$(sudo grep LAVALINK_SERVER_PASSWORD /etc/lavalink/secret.env | cut -d= -f2-)
+   VID=$(curl -s -H "Authorization: $PW" "http://localhost:2333/v4/loadtracks?identifier=ytmsearch:daft%20punk%20get%20lucky" \
+     | python3 -c 'import json,sys; d=json.load(sys.stdin)["data"]; t=d if isinstance(d,list) else d["tracks"]; print(t[0]["info"]["identifier"])')
+   curl -s -o /dev/null -w "HTTP %{http_code}, %{size_download} bytes\n" -H "Authorization: $PW" --max-time 15 "http://localhost:2333/youtube/stream/$VID"
+   ```
+   Want: `HTTP 200, <several MB> bytes`. A 500 or tiny body = still broken,
+   try a newer hash or wait for upstream.
+
+If no newer commit fixes it, upstream hasn't caught up yet — nothing to
+do but wait (check the youtube-source issues/PRs). Spotify/Bandcamp/direct
+non-YouTube sources are unaffected in the meantime.
 
 ### 21. Roll back to Cloud Run
 
