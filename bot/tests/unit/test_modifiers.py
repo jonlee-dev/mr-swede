@@ -1,7 +1,5 @@
 """Unit tests for src.services.modifiers (pure parse/format/validate/edit)."""
 
-import pytest
-
 from src.services import modifiers as m
 from src.services.modifiers import ServerModifiers
 
@@ -34,10 +32,11 @@ class TestParseArgs:
 
 class TestToArgsRoundTrip:
     def test_roundtrip_normalizes_order(self):
-        s = "-setkey nobuildcost -modifier raids none -modifier portals casual"
+        s = "-setkey nobuildcost -modifier portals casual -modifier raids none"
         once = m.parse_args(s)
-        # to_args emits preset, then modifiers in MODIFIERS order, then keys
-        assert once.to_args() == "-modifier portals casual -modifier raids none -setkey nobuildcost"
+        # to_args emits preset, then modifiers in MODIFIERS order (raids is
+        # 4th, portals 5th -> raids first), then keys.
+        assert once.to_args() == "-modifier raids none -modifier portals casual -setkey nobuildcost"
         # re-parsing the formatted string yields the same structure
         assert m.parse_args(once.to_args()) == once
 
