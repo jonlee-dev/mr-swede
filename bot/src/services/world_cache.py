@@ -16,7 +16,7 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from src.config.logging import get_logger
 from src.config.settings import get_settings
@@ -51,7 +51,7 @@ def remember(worlds: list[str], active: str | None) -> None:
     payload = {
         "worlds": sorted(worlds),
         "active": active,
-        "updated": datetime.now(timezone.utc).isoformat(),
+        "updated": datetime.now(UTC).isoformat(),
     }
     try:
         parent = os.path.dirname(path)
