@@ -99,7 +99,7 @@ services:
       # metal) travel through portals -- removes the original-game
       # restriction. Other modifiers can be added space-separated:
       #   "-modifier portals casual -modifier resources more"
-      SERVER_ARGS: "-modifier portals casual"
+      SERVER_ARGS: "-modifier portals casual -modifier raids none"
 
       BACKUPS_CRON: "0 */2 * * *"
       BACKUPS_MAX_AGE: "3"
