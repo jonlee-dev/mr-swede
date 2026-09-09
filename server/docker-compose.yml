@@ -57,7 +57,18 @@ services:
       # /config/bepinex/{plugins,patchers} via a oneshot systemd unit
       # (install-mods.service) that runs before this container starts.
       # See server/scripts/install-mods.sh for what gets installed.
-      BEPINEX: "true"
+      #
+      # 2026-09-09: TEMPORARILY DISABLED for the Valheim 1.0 launch.
+      # Jotunn 2.29.x (latest on Thunderstore is 2.29.2, Jul 2026 --
+      # pre-1.0) throws in Jotunn.Utils.GameVersions.GetNetworkVersion()
+      # during ZNet_RPC_ServerHandshake on 1.0, which makes the server
+      # reject EVERY client connection (modded or not). No 1.0-compatible
+      # Jotunn has shipped yet. Running vanilla 1.0 so the server is
+      # joinable; flip back to "true" once Jotunn releases a 1.0 build
+      # AND install-mods.sh is bumped to it (clients must match). The
+      # mod .dlls + install-mods + PRE_SERVER_RUN_HOOK stay in place and
+      # are simply inert while this is false, so re-enabling is one edit.
+      BEPINEX: "false"
 
       # Mod boot-race fix (2026-09-09). lloesche rebuilds the active
       # BepInEx dir on every container start via an atomic `mv
