@@ -209,6 +209,12 @@ def _list_worlds() -> list[str]:
                 name = entry.name
                 if name.startswith("."):
                     continue
+                # lloesche's periodic backups live alongside real saves --
+                # as `<world>_backup_auto-<ts>` dirs (1.0 format) or
+                # `<world>_backup_*.db`/`.fwl` files (pre-1.0). Exclude them
+                # so they can't be listed or switched to as if they were worlds.
+                if "_backup_" in name:
+                    continue
                 if entry.is_dir():
                     # 1.0+ format: worlds_local/<name>/
                     names.add(name)

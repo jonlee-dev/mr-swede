@@ -105,3 +105,22 @@ class TestResolveInventory:
         assert inv.worlds == []
         assert inv.active is None
         assert inv.live is False
+
+    def test_backup_artifacts_are_filtered_from_live(self):
+        # lloesche backup dirs/files share worlds_local with real saves;
+        # they must never appear as switchable worlds.
+        live = _live(
+            ["1.0", "1.0_backup_auto-20260909-165319", "default", "default.old"],
+            active="1.0",
+        )
+        inv = resolve_inventory(live, metadata_active=None, cached=CachedWorlds())
+        assert inv.worlds == ["1.0", "default"]
+
+    def test_backup_artifacts_are_filtered_from_cache(self):
+        cached = CachedWorlds(
+            worlds=["1.0", "1.0_backup_auto-20260909-165319", "default"],
+            active="1.0",
+            updated="t",
+        )
+        inv = resolve_inventory(None, metadata_active=None, cached=cached)
+        assert inv.worlds == ["1.0", "default"]

@@ -42,6 +42,21 @@ def validate_world_name(name: str) -> str | None:
     return None
 
 
+def _is_real_world(name: str) -> bool:
+    """False for lloesche backup artifacts that share the worlds_local dir.
+
+    Backups are `<world>_backup_auto-<ts>` dirs (1.0 format) or
+    `<world>_backup_*` / `*.old` files (pre-1.0). They must never appear
+    as switchable worlds. The daemon already filters these, but we also
+    filter here so a stale cache (or any future producer) can't surface one.
+    """
+    return "_backup_" not in name and not name.endswith(".old")
+
+
+def _real_worlds(names: list[str]) -> list[str]:
+    return sorted(n for n in names if _is_real_world(n))
+
+
 @dataclass(frozen=True)
 class Inventory:
     """Reconciled view of the world inventory for rendering + validation."""
@@ -67,9 +82,9 @@ def resolve_inventory(
     """
     if live is not None and live.server_running and live.worlds:
         active = metadata_active or live.active_world or cached.active
-        return Inventory(worlds=sorted(live.worlds), active=active, live=True, updated=None)
+        return Inventory(worlds=_real_worlds(live.worlds), active=active, live=True, updated=None)
 
     active = metadata_active or cached.active
     return Inventory(
-        worlds=sorted(cached.worlds), active=active, live=False, updated=cached.updated
+        worlds=_real_worlds(cached.worlds), active=active, live=False, updated=cached.updated
     )
