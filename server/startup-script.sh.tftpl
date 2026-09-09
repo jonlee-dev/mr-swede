@@ -114,13 +114,25 @@ ${base64encode(install_mods_service)}
 __VALHEIM_BLOB_EOF__
 chmod 0644 /etc/systemd/system/install-mods.service
 
-# world.env: plain text since templatefile already substituted the values.
-# Single-quoted heredoc so bash doesn't try to re-expand anything (the
-# var values landed literal after templatefile()).
-cat > /etc/valheim/world.env <<'__VALHEIM_BLOB_EOF__'
-SERVER_NAME=${server_name}
-WORLD_NAME=${world_name}
-__VALHEIM_BLOB_EOF__
+# world.env: SERVER_NAME is a build-time constant; WORLD_NAME is
+# resolved AT BOOT from the instance `world-name` metadata key so the
+# bot's `/valheim world switch|new` can change worlds without recreating
+# the VM (it sets that key, then stop/starts the VM). The key is absent
+# until the bot first sets it, so we fall back to the Terraform default
+# (var.world_name -> ${world_name}) on a fresh VM. `curl -f` makes an
+# absent key (HTTP 404) yield an empty string rather than the 404 body.
+# ${server_name}/${world_name} are templatefile() substitutions (literal
+# by the time bash runs); $WORLD_NAME_META is a runtime bash var.
+WORLD_NAME_META="$(curl -s -f -H 'Metadata-Flavor: Google' \
+  'http://metadata.google.internal/computeMetadata/v1/instance/attributes/world-name' 2>/dev/null || true)"
+if [ -z "$WORLD_NAME_META" ]; then
+  WORLD_NAME_META='${world_name}'
+fi
+{
+  echo "SERVER_NAME=${server_name}"
+  echo "WORLD_NAME=$WORLD_NAME_META"
+} > /etc/valheim/world.env
+echo "world.env resolved WORLD_NAME=$WORLD_NAME_META"
 
 echo "${data_disk_device}" > /etc/valheim/.disk-id
 

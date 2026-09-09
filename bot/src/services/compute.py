@@ -31,6 +31,9 @@ from src.config.logging import get_logger
 logger = get_logger(__name__)
 
 
+WORLD_METADATA_KEY = "world-name"
+
+
 @dataclass(frozen=True)
 class InstanceState:
     """A snapshot of VM state, suitable for embedding in a Discord response."""
@@ -40,6 +43,13 @@ class InstanceState:
     status: str  # GCE statuses: PROVISIONING, STAGING, RUNNING, STOPPING, TERMINATED
     public_ip: str | None
     machine_type: str
+    # The active world as recorded in the instance `world-name` metadata
+    # key (what the startup-script reads into world.env on boot). This is
+    # readable whether the VM is RUNNING or TERMINATED, so it's the
+    # authoritative "which world will boot" signal. None when the key is
+    # unset (fresh VM that still uses the Terraform default) -- callers
+    # fall back to the status daemon / cache to name it.
+    active_world: str | None = None
 
 
 @lru_cache(maxsize=1)
@@ -60,6 +70,15 @@ def _public_ip(instance: compute_v1.Instance) -> str | None:
     return None
 
 
+def _metadata_value(instance: compute_v1.Instance, key: str) -> str | None:
+    """Read a single instance-metadata value by key, or None if unset."""
+    md = instance.metadata
+    for item in (md.items or []) if md else []:
+        if item.key == key:
+            return item.value or None
+    return None
+
+
 async def describe_instance(project: str, zone: str, instance: str) -> InstanceState:
     """Return current VM state. Wraps the sync GCE call in a thread."""
 
@@ -71,9 +90,39 @@ async def describe_instance(project: str, zone: str, instance: str) -> InstanceS
             status=vm.status,
             public_ip=_public_ip(vm),
             machine_type=_short_name(vm.machine_type),
+            active_world=_metadata_value(vm, WORLD_METADATA_KEY),
         )
 
     return await asyncio.to_thread(_get)
+
+
+async def set_world(project: str, zone: str, instance: str, world: str) -> None:
+    """Set the instance `world-name` metadata key to `world`.
+
+    A read-modify-write: GCE's setMetadata replaces the whole metadata
+    block and requires the current fingerprint, so we fetch, swap just
+    our key (leaving startup-script / ssh-keys / etc. untouched), and
+    write back. The new value takes effect on the NEXT boot, when the
+    startup-script reads it into world.env -- callers pair this with a
+    stop/start. Idempotent: setting the key to its current value is a
+    harmless no-op write.
+    """
+
+    def _set() -> None:
+        client = _client()
+        vm = client.get(project=project, zone=zone, instance=instance)
+        md = vm.metadata
+        items = [i for i in (md.items or []) if i.key != WORLD_METADATA_KEY]
+        items.append(compute_v1.Items(key=WORLD_METADATA_KEY, value=world))
+        client.set_metadata(
+            project=project,
+            zone=zone,
+            instance=instance,
+            metadata_resource=compute_v1.Metadata(fingerprint=md.fingerprint, items=items),
+        )
+        logger.info("set_world metadata written", instance=instance, world=world)
+
+    await asyncio.to_thread(_set)
 
 
 def _transition_sync(

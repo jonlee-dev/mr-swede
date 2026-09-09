@@ -117,8 +117,18 @@ resource "google_compute_instance" "valheim" {
     # user out until their next gcloud ssh re-adds it. Ignoring just
     # this key keeps TF in charge of `startup-script` while letting
     # gcloud manage SSH access metadata as it always has.
+    #
+    # `world-name` is the same story: the bot sets this key via
+    # setMetadata when the operator runs `/valheim world switch|new`,
+    # and the startup-script reads it into world.env on the next boot.
+    # Without this ignore, a `terraform apply` would want to delete the
+    # bot-set key (it isn't declared in the metadata map above),
+    # silently reverting the active world to var.world_name on the next
+    # reboot. Ignoring it lets the bot own the live value while TF still
+    # owns the first-boot default via var.world_name.
     ignore_changes = [
       metadata["ssh-keys"],
+      metadata["world-name"],
     ]
   }
 }

@@ -139,8 +139,55 @@ def valheim_status_embed(
     return embed
 
 
+def valheim_worlds_embed(
+    worlds: list[str],
+    active: str | None,
+    *,
+    live: bool,
+    updated: str | None = None,
+) -> discord.Embed:
+    """Render the world inventory for `/valheim world list`.
+
+    `live` distinguishes a fresh reading from the running server (green,
+    authoritative) from a cached one served while the VM is off (grey,
+    with a freshness hint). Pure function; the cog resolves the inputs.
+    """
+    color = 0x2ECC71 if live else 0x95A5A6
+    embed = discord.Embed(title="Valheim worlds", color=color)
+
+    if not worlds:
+        embed.description = (
+            "No worlds found on the server yet."
+            if live
+            else "No cached world list yet — run `/valheim status` or `/valheim world list` "
+            "once while the server is up, and it'll be remembered for next time."
+        )
+        return embed
+
+    embed.description = "\n".join(
+        f"• `{w}`{'  ◀ **active**' if w == active else ''}" for w in worlds
+    )
+
+    # The active world can be set (in metadata) but not yet exist on disk
+    # -- e.g. right after `/valheim world new` before the first boot.
+    if active and active not in worlds:
+        embed.add_field(
+            name="Active",
+            value=f"`{active}` — will be generated on next boot",
+            inline=False,
+        )
+
+    embed.set_footer(
+        text="live from the server"
+        if live
+        else f"server offline — cached list{f' from {updated}' if updated else ''}"
+    )
+    return embed
+
+
 __all__ = [
     "music_playlist_embed",
     "music_track_embed",
     "valheim_status_embed",
+    "valheim_worlds_embed",
 ]

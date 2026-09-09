@@ -60,6 +60,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import socket
 import sys
 import threading
@@ -84,6 +85,13 @@ QUERY_HOST = "127.0.0.1"
 QUERY_PORT = 2457  # Valheim convention: game_port (2456) + 1
 QUERY_INTERVAL_SECONDS = 30
 QUERY_TIMEOUT_SECONDS = 3.0
+
+# The persistent data disk mount (host side of the container's /config).
+# We enumerate world saves here so the bot's `/valheim world list` can
+# name them, and read the active world from world.env. Both are refreshed
+# on the same cadence as the A2S query and published in /status.json.
+WORLDS_DIR = "/opt/valheim/data/worlds_local"
+WORLD_ENV_PATH = "/etc/valheim/world.env"
 
 # ---------------------------------------------------------------------------
 # Steam A2S protocol -- the bare slice we need.
@@ -178,6 +186,56 @@ def _query_a2s_info(
 
 
 # ---------------------------------------------------------------------------
+# World enumeration (for the bot's `/valheim world list`)
+# ---------------------------------------------------------------------------
+#
+# Valheim 1.0 changed the save layout: each world is now a DIRECTORY under
+# worlds_local/ (holding `_main.*.db2`/`.fwl2` + streamed `.chunk` files).
+# Pre-1.0 worlds were flat `<name>.db` + `<name>.fwl` files. We report the
+# union of both shapes so a mid-migration disk lists correctly, and skip
+# lloesche's rolling `.old` + `*_backup_*` artifacts.
+
+
+def _list_worlds() -> list[str]:
+    """Return the world names present on the data disk, sorted.
+
+    Best-effort: any filesystem error yields an empty list (the bot then
+    falls back to its cached list), never a daemon crash.
+    """
+    names: set[str] = set()
+    try:
+        with os.scandir(WORLDS_DIR) as it:
+            for entry in it:
+                name = entry.name
+                if name.startswith("."):
+                    continue
+                if entry.is_dir():
+                    # 1.0+ format: worlds_local/<name>/
+                    names.add(name)
+                elif name.endswith(".fwl"):
+                    # pre-1.0 flat format: <name>.fwl (+ <name>.db).
+                    # `.fwl.old` ends in .old, not .fwl, so it's excluded.
+                    stem = name[: -len(".fwl")]
+                    if "_backup_" not in stem:
+                        names.add(stem)
+    except OSError as exc:
+        log.warning("world enumeration failed (dir=%s): %r", WORLDS_DIR, exc)
+    return sorted(names)
+
+
+def _active_world() -> str | None:
+    """Read the active world name from world.env (WORLD_NAME=...)."""
+    try:
+        with open(WORLD_ENV_PATH, encoding="utf-8") as fh:
+            for line in fh:
+                if line.startswith("WORLD_NAME="):
+                    return line.split("=", 1)[1].strip()
+    except OSError as exc:
+        log.warning("could not read %s: %r", WORLD_ENV_PATH, exc)
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Daemon state and query loop
 # ---------------------------------------------------------------------------
 
@@ -193,6 +251,10 @@ _state: dict[str, Any] = {
     "join_code": None,
     "player_count": 0,
     "server_running": False,
+    # World inventory (additive fields; consumers that don't know about
+    # them, e.g. the idle-watcher probe, simply ignore them):
+    "worlds": [],  # list[str] of world names on the data disk
+    "active_world": None,  # str name currently selected in world.env
 }
 _state_lock = threading.Lock()
 
@@ -216,6 +278,9 @@ def _query_loop() -> None:
     """
     while True:
         result = _query_a2s_info(QUERY_HOST, QUERY_PORT, QUERY_TIMEOUT_SECONDS)
+        # Filesystem reads outside the lock; they don't touch A2S state.
+        worlds = _list_worlds()
+        active_world = _active_world()
         with _state_lock:
             if result is None:
                 _state["server_running"] = False
@@ -228,6 +293,8 @@ def _query_loop() -> None:
                 _state["player_count"] = int(players)
                 _state["server_running"] = True
                 _state.pop("error", None)
+            _state["worlds"] = worlds
+            _state["active_world"] = active_world
             _state["last_update"] = _now_iso()
         time.sleep(QUERY_INTERVAL_SECONDS)
 

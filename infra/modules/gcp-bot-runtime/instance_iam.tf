@@ -31,12 +31,18 @@ resource "google_project_iam_custom_role" "vm_controller" {
   project     = var.project_id
   role_id     = "mrSwedeVmController"
   title       = "Mr. Swede VM Controller"
-  description = "Minimum permissions to start, stop, and describe the Valheim VM. Used by the bot service and the idle watcher."
+  description = "Minimum permissions to start, stop, describe, and set the world-name metadata of the Valheim VM. Used by the bot service and the idle watcher."
 
   permissions = [
     "compute.instances.get",
     "compute.instances.start",
     "compute.instances.stop",
+    # `/valheim world switch|new` sets the instance `world-name` metadata
+    # key, then stop/starts the VM so the startup-script re-reads it into
+    # world.env. setMetadata is the only new permission that needs; the
+    # reboot uses the start/stop grants above (a graceful cycle, so the
+    # world being left is saved -- reset would be a hard power-cycle).
+    "compute.instances.setMetadata",
     # Free insurance: the SDK auto-polls operations on some calls,
     # and any future "wait until RUNNING" feature would need this.
     # Not used today.

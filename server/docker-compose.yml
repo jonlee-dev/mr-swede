@@ -59,6 +59,30 @@ services:
       # See server/scripts/install-mods.sh for what gets installed.
       BEPINEX: "true"
 
+      # Mod boot-race fix (2026-09-09). lloesche rebuilds the active
+      # BepInEx dir on every container start via an atomic `mv
+      # bepinex.tmp bepinex`. After a Valheim *update* boot the freshly
+      # built plugins/ AND patchers/ come up EMPTY, so mods silently
+      # fail to load until a second restart -- the 1.0 update hit this
+      # exactly (`0 plugins to load` on first boot). On later boots
+      # lloesche re-syncs plugins/ from /config but NEVER patchers/.
+      #
+      # This hook runs inside valheim-server right AFTER the merge/mv and
+      # right BEFORE the server binary launches, so it is immune to the
+      # mv that orphaned the old bind-mount attempt (see volumes note).
+      # It copies both dirs from the persistent disk into the active
+      # BepInEx dir. Result: mods load on the FIRST boot after any
+      # update/reboot. `mkdir -p` first because the active subdirs may
+      # not exist yet at hook-fire time.
+      #
+      # Scope: this fixes plugin/patcher *presence*. PlanBuild still
+      # loads client-side only -- HookGenPatcher 0.0.4 does not generate
+      # MMHOOK_assembly_valheim under BepInEx 5.4.2350 (it lands in
+      # patchers/ now but emits nothing), so PlanBuild's server-side
+      # Awake still throws. Same limitation accepted 2026-05-03; verified
+      # still true on Valheim 1.0. Blueprints work client-side.
+      PRE_SERVER_RUN_HOOK: "mkdir -p /opt/valheim/bepinex/BepInEx/patchers /opt/valheim/bepinex/BepInEx/plugins; cp -f /config/bepinex/patchers/*.dll /opt/valheim/bepinex/BepInEx/patchers/ 2>/dev/null || true; cp -f /config/bepinex/plugins/*.dll /opt/valheim/bepinex/BepInEx/plugins/ 2>/dev/null || true"
+
       # World modifiers (Valheim CLI flag -modifier <name> <value>).
       # `portals casual` lets metals (copper, tin, iron, silver, black
       # metal) travel through portals -- removes the original-game
@@ -83,19 +107,16 @@ services:
     volumes:
       - /opt/valheim/data:/config
       # NOTE on BepInEx patchers: lloesche's image only auto-syncs
-      # /config/bepinex/plugins/ to the active BepInEx dir; it does
-      # NOT sync /config/bepinex/patchers/. We tried bind-mounting our
-      # host patchers dir into the container's active patchers path
-      # but lloesche's `merge_mod` does an atomic `mv bepinex.tmp
-      # bepinex` which orphans the bind mount (the new bepinex/ has
-      # no mount, the .old/ retains it). PlanBuild requires the
-      # HookGenPatcher patcher and its server-side marketplace
-      # depends on it loading; without that we run with PlanBuild's
-      # plugin partially loaded and Jotunn handling RPC bridging.
+      # /config/bepinex/plugins/ to the active BepInEx dir; it does NOT
+      # sync /config/bepinex/patchers/. A bind-mount fails because
+      # lloesche's merge does an atomic `mv bepinex.tmp bepinex` that
+      # orphans the mount. As of 2026-09-09 we sync BOTH dirs via
+      # PRE_SERVER_RUN_HOOK above (runs after that mv), so patchers/ is
+      # now populated on every boot -- no custom Dockerfile needed.
       #
-      # Operational decision (2026-05-03): accept the limitation.
-      # Friend group is small, blueprints work fine client-side,
-      # and the marketplace is non-essential. install-mods.sh still
-      # downloads HookGenPatcher (it's a documented PlanBuild dep)
-      # so if we ever switch to a custom Dockerfile that wires
-      # patchers in correctly, no other change is needed.
+      # PlanBuild still runs plugin-only (blueprints work client-side,
+      # Jotunn handles RPC bridging). Its server-side hooks need
+      # HookGenPatcher to emit MMHOOK_assembly_valheim, which 0.0.4 does
+      # not do under BepInEx 5.4.2350 even when loaded. Revisit if a
+      # HookGenPatcher build compatible with this BepInEx ships, or if
+      # PlanBuild drops the separate-patcher requirement.

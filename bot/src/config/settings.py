@@ -47,6 +47,11 @@ class Settings(BaseSettings):
         alias="VALHEIM_STATUS_HTTP_PORT",
         description="TCP port on the Valheim VM where the log-scraping status server listens. Must match server/scripts/status-server.py + the firewall rule in gcp-valheim-vm.",
     )
+    valheim_world_cache_path: str = Field(
+        default="~/.cache/mr-swede/worlds.json",
+        alias="VALHEIM_WORLD_CACHE_PATH",
+        description="Where the bot caches the last-seen world list from the status daemon, so /valheim world list works while the VM is off. `~` is expanded. Written on every successful status fetch.",
+    )
 
     # Lavalink target. Always localhost on bot-vm (co-tenanted); override
     # for local dev when running Lavalink at a different address.

@@ -28,7 +28,7 @@ The endpoint returns:
     }
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import httpx
 
@@ -45,6 +45,13 @@ class LiveStatus:
     player_count: int
     server_running: bool
     last_update: str | None  # ISO8601, useful for stale-data detection in the embed
+    # World inventory reported by the daemon (only available while the VM
+    # is up). `worlds` is every save on the data disk; `active_world` is
+    # the one selected in world.env. Both default to empty/None so a VM
+    # or daemon that predates these fields still parses cleanly. The bot
+    # caches them so `/valheim world list` works while the VM is off.
+    worlds: list[str] = field(default_factory=list)
+    active_world: str | None = None
 
 
 async def fetch_status(host: str, port: int = 9001, timeout: float = 5.0) -> LiveStatus | None:
@@ -81,9 +88,14 @@ async def fetch_status(host: str, port: int = 9001, timeout: float = 5.0) -> Liv
             last_update=data.get("last_update"),
         )
 
+    raw_worlds = data.get("worlds") or []
+    worlds = [str(w) for w in raw_worlds] if isinstance(raw_worlds, list) else []
+
     return LiveStatus(
         join_code=data.get("join_code"),
         player_count=int(data.get("player_count") or 0),
         server_running=bool(data.get("server_running")),
         last_update=data.get("last_update"),
+        worlds=worlds,
+        active_world=data.get("active_world"),
     )
