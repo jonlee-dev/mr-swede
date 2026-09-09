@@ -16,6 +16,7 @@ from __future__ import annotations
 import discord
 
 from src.services.compute import InstanceState
+from src.services.modifiers import GLOBAL_KEYS, MODIFIERS, ServerModifiers
 from src.services.music import PLAYLIST_TRACK_CAP, PlayResult, TrackInfo, format_duration
 from src.services.server_query import LiveStatus
 
@@ -185,9 +186,38 @@ def valheim_worlds_embed(
     return embed
 
 
+def valheim_modifiers_embed(mods: ServerModifiers) -> discord.Embed:
+    """Render the world modifiers for `/valheim modifier list`.
+
+    Shows all five difficulty dials (value or `default`), the active
+    preset if any, and which global-key toggles are on. Pure function.
+    """
+    embed = discord.Embed(title="Valheim world modifiers", color=0x8E7CC3)
+
+    if mods.preset and mods.preset != "normal":
+        embed.add_field(name="Preset", value=f"`{mods.preset}`", inline=False)
+
+    embed.add_field(
+        name="Difficulty",
+        value="\n".join(f"• **{key}**: `{mods.modifiers.get(key, 'default')}`" for key in MODIFIERS),
+        inline=False,
+    )
+
+    on = [label for gk, label in GLOBAL_KEYS.items() if gk in mods.keys]
+    embed.add_field(
+        name="Toggles",
+        value=("• " + "\n• ".join(on)) if on else "_none_",
+        inline=False,
+    )
+
+    embed.set_footer(text="changes apply on the next server restart")
+    return embed
+
+
 __all__ = [
     "music_playlist_embed",
     "music_track_embed",
+    "valheim_modifiers_embed",
     "valheim_status_embed",
     "valheim_worlds_embed",
 ]

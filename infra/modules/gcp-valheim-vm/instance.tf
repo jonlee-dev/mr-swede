@@ -28,6 +28,7 @@ locals {
     install_mods_service          = file("${local.server_dir}/scripts/install-mods.service")
     server_name                   = var.server_name
     world_name                    = var.world_name
+    world_modifiers               = var.world_modifiers
     # Stable Linux device path. GCE exposes attached disks under
     # /dev/disk/by-id/google-<device_name>; we set device_name below.
     data_disk_device = "/dev/disk/by-id/google-valheim-data"
@@ -129,6 +130,10 @@ resource "google_compute_instance" "valheim" {
     ignore_changes = [
       metadata["ssh-keys"],
       metadata["world-name"],
+      # Same story as world-name: /valheim modifier sets this key and the
+      # startup-script folds it into SERVER_ARGS on boot. Ignore so a
+      # terraform apply doesn't revert the operator's modifier choices.
+      metadata["world-modifiers"],
     ]
   }
 }

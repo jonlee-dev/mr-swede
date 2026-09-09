@@ -94,12 +94,14 @@ services:
       # still true on Valheim 1.0. Blueprints work client-side.
       PRE_SERVER_RUN_HOOK: "mkdir -p /opt/valheim/bepinex/BepInEx/patchers /opt/valheim/bepinex/BepInEx/plugins; cp -f /config/bepinex/patchers/*.dll /opt/valheim/bepinex/BepInEx/patchers/ 2>/dev/null || true; cp -f /config/bepinex/plugins/*.dll /opt/valheim/bepinex/BepInEx/plugins/ 2>/dev/null || true"
 
-      # World modifiers (Valheim CLI flag -modifier <name> <value>).
-      # `portals casual` lets metals (copper, tin, iron, silver, black
-      # metal) travel through portals -- removes the original-game
-      # restriction. Other modifiers can be added space-separated:
-      #   "-modifier portals casual -modifier resources more"
-      SERVER_ARGS: "-modifier portals casual -modifier raids none"
+      # World modifiers (Valheim CLI flag -modifier/-preset/-setkey) come
+      # via SERVER_ARGS. NOT set here on purpose: the startup-script
+      # resolves SERVER_ARGS from the bot-settable `world-modifiers`
+      # instance metadata (fallback: the gcp-valheim-vm world_modifiers TF
+      # default) and writes it into /etc/valheim/world.env, which this
+      # compose loads via env_file. A value in this `environment:` block
+      # would override the env_file, so it must stay absent for
+      # `/valheim modifier` to work. See src/services/modifiers.py.
 
       BACKUPS_CRON: "0 */2 * * *"
       BACKUPS_MAX_AGE: "3"

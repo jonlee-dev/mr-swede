@@ -57,6 +57,12 @@ variable "world_name" {
   default     = "default"
 }
 
+variable "world_modifiers" {
+  description = "Default SERVER_ARGS world-modifier string used on a fresh VM before the bot sets the `world-modifiers` metadata key. The bot's /valheim modifier commands write that key (folded into SERVER_ARGS by the startup-script) to change modifiers without recreating the VM. Format: Valheim launch args, e.g. '-modifier portals casual -modifier raids none -setkey nobuildcost'."
+  type        = string
+  default     = "-modifier portals casual"
+}
+
 variable "vpc_cidr" {
   description = "Subnet CIDR for the dedicated Valheim VPC. /24 is more than enough for a single VM."
   type        = string

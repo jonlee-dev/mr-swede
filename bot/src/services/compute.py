@@ -32,6 +32,7 @@ logger = get_logger(__name__)
 
 
 WORLD_METADATA_KEY = "world-name"
+WORLD_MODIFIERS_METADATA_KEY = "world-modifiers"
 
 
 @dataclass(frozen=True)
@@ -50,6 +51,11 @@ class InstanceState:
     # unset (fresh VM that still uses the Terraform default) -- callers
     # fall back to the status daemon / cache to name it.
     active_world: str | None = None
+    # Raw SERVER_ARGS modifier string from the `world-modifiers` metadata
+    # key (what the startup-script folds into SERVER_ARGS on boot). None
+    # when unset (VM uses the Terraform default). Parsed by
+    # src.services.modifiers for /valheim modifier list.
+    server_modifiers_raw: str | None = None
 
 
 @lru_cache(maxsize=1)
@@ -91,38 +97,44 @@ async def describe_instance(project: str, zone: str, instance: str) -> InstanceS
             public_ip=_public_ip(vm),
             machine_type=_short_name(vm.machine_type),
             active_world=_metadata_value(vm, WORLD_METADATA_KEY),
+            server_modifiers_raw=_metadata_value(vm, WORLD_MODIFIERS_METADATA_KEY),
         )
 
     return await asyncio.to_thread(_get)
 
 
-async def set_world(project: str, zone: str, instance: str, world: str) -> None:
-    """Set the instance `world-name` metadata key to `world`.
+async def set_metadata(project: str, zone: str, instance: str, key: str, value: str) -> None:
+    """Set a single instance-metadata key, preserving all other keys.
 
     A read-modify-write: GCE's setMetadata replaces the whole metadata
     block and requires the current fingerprint, so we fetch, swap just
-    our key (leaving startup-script / ssh-keys / etc. untouched), and
+    this key (leaving startup-script / ssh-keys / etc. untouched), and
     write back. The new value takes effect on the NEXT boot, when the
-    startup-script reads it into world.env -- callers pair this with a
-    stop/start. Idempotent: setting the key to its current value is a
-    harmless no-op write.
+    startup-script reads it -- callers pair this with a stop/start.
+    Idempotent: writing the current value is a harmless no-op.
     """
 
     def _set() -> None:
         client = _client()
         vm = client.get(project=project, zone=zone, instance=instance)
         md = vm.metadata
-        items = [i for i in (md.items or []) if i.key != WORLD_METADATA_KEY]
-        items.append(compute_v1.Items(key=WORLD_METADATA_KEY, value=world))
+        items = [i for i in (md.items or []) if i.key != key]
+        items.append(compute_v1.Items(key=key, value=value))
         client.set_metadata(
             project=project,
             zone=zone,
             instance=instance,
             metadata_resource=compute_v1.Metadata(fingerprint=md.fingerprint, items=items),
         )
-        logger.info("set_world metadata written", instance=instance, world=world)
+        logger.info("set_metadata written", instance=instance, key=key, value=value)
 
     await asyncio.to_thread(_set)
+
+
+async def set_world(project: str, zone: str, instance: str, world: str) -> None:
+    """Set the active world via the `world-name` metadata key. Thin wrapper
+    over set_metadata; see it for the read-modify-write semantics."""
+    await set_metadata(project, zone, instance, WORLD_METADATA_KEY, world)
 
 
 def _transition_sync(
